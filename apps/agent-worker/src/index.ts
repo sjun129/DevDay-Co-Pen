@@ -1,24 +1,28 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
   AGENT_SECRET_HEADER,
+  isAgentId,
   type AgentJobRequest,
   type AgentRoomRequest,
   type AgentUndoRequest,
 } from '@co-pen/shared';
 import { env } from './env';
 import { llmMode } from './llm';
-import { joinSession, leaveSession } from './session';
+import { enqueueJob, enqueueUndo, joinRoom, leaveRoom } from './session';
 
 type Handler = (body: unknown) => void;
 
 const routes: Record<string, Handler> = {
-  '/join': (body) => joinSession((body as AgentRoomRequest).documentName),
-  '/leave': (body) => leaveSession((body as AgentRoomRequest).documentName),
+  '/join': (body) => joinRoom((body as AgentRoomRequest).documentName),
+  '/leave': (body) => leaveRoom((body as AgentRoomRequest).documentName),
   '/jobs': (body) => {
     const job = body as AgentJobRequest;
-    joinSession(job.documentName).enqueueJob(job);
+    if (isAgentId(job.agentId)) enqueueJob(job);
   },
-  '/undo': (body) => joinSession((body as AgentUndoRequest).documentName).enqueueUndo(),
+  '/undo': (body) => {
+    const { documentName, agentId } = body as AgentUndoRequest;
+    enqueueUndo(documentName, isAgentId(agentId) ? agentId : undefined);
+  },
 };
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

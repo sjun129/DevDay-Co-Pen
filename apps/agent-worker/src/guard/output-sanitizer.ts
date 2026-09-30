@@ -5,6 +5,8 @@
  * 문서에는 Yjs 텍스트(plain text)로만 들어가므로 서식·태그로 해석될 여지가 없다.
  */
 
+import { MENTION_MARK_PATTERN } from '@co-pen/shared';
+
 export const MAX_OUTPUT_CHARS = 4000;
 export const LINK_PLACEHOLDER = '[링크 삭제됨]';
 
@@ -19,8 +21,6 @@ const SCHEME_URL = /\b[a-z][a-z0-9+.-]*:\/\/\S+/gi;
 const INLINE_SCHEME = /\b(?:javascript|vbscript|data|mailto|file):\S*/gi;
 const WWW_URL = /\bwww\.\S+/gi;
 const BARE_DOMAIN_PATH = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*/gi;
-/** "@AI 요청" 형태가 AI 문단에 남으면 사람이 Enter만 쳐도 새 작업이 된다 */
-const MENTION_MARK = /[@＠](?=AI|초안)/gi;
 
 export function sanitizeText(text: string): string {
   return text
@@ -32,7 +32,8 @@ export function sanitizeText(text: string): string {
     .replace(INLINE_SCHEME, LINK_PLACEHOLDER)
     .replace(WWW_URL, LINK_PLACEHOLDER)
     .replace(BARE_DOMAIN_PATH, LINK_PLACEHOLDER)
-    .replace(MENTION_MARK, '');
+    // "@AI 요청" 형태가 AI 문단에 남으면 사람이 Enter만 쳐도 새 작업이 된다
+    .replace(MENTION_MARK_PATTERN, '');
 }
 
 /**

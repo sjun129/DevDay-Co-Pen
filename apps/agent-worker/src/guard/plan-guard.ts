@@ -1,3 +1,4 @@
+import { parseMention, type AgentAction } from '@co-pen/shared';
 import type { BlockSummary } from '../doc-model';
 
 /**
@@ -6,11 +7,8 @@ import type { BlockSummary } from '../doc-model';
  * 문서 본문에 무엇이 쓰여 있든 대상 블록과 행동은 이 범위를 벗어날 수 없다.
  */
 
-export const PLAN_ACTIONS = ['insert_after', 'rewrite'] as const;
-export type PlanAction = (typeof PLAN_ACTIONS)[number];
-
-/** 실행기가 지금 수행할 수 있는 행동. rewrite는 교정 방식(6장 3번)이 정해지면 연다. */
-export const EXECUTABLE_ACTIONS: ReadonlySet<PlanAction> = new Set(['insert_after']);
+export const PLAN_ACTIONS = ['insert_after', 'rewrite'] as const satisfies readonly AgentAction[];
+export type PlanAction = AgentAction;
 
 export interface VerifiedPlan {
   targetIndex: number;
@@ -46,14 +44,29 @@ export function allowedTargets(
   return allowed;
 }
 
+/**
+ * 교정 대상은 모델이 고르지 않는다. 멘션 바로 위(빈 줄은 건너뜀)의 본문 문단 하나뿐이다.
+ * 제목이나 다른 멘션이 먼저 나오면 대상이 없는 것으로 본다.
+ */
+export function rewriteTarget(blocks: BlockSummary[], mentionIndex: number): number {
+  for (let i = mentionIndex - 1; i >= 0; i--) {
+    const block = blocks[i]!;
+    if (!block.text.trim()) continue;
+    return block.type === 'paragraph' && !parseMention(block.text) ? i : -1;
+  }
+  return -1;
+}
+
+/** permitted: 이 작업을 맡은 에이전트 역할에 허용된 행동 하나 */
 export function verifyPlan(
   raw: unknown,
   allowed: ReadonlySet<number>,
   fallbackIndex: number,
+  permitted: PlanAction,
 ): VerifiedPlan {
   const reject = (reason: string): VerifiedPlan => ({
     targetIndex: fallbackIndex,
-    action: 'insert_after',
+    action: permitted,
     rejected: reason,
   });
 
@@ -63,7 +76,7 @@ export function verifyPlan(
   if (!Number.isInteger(targetIndex)) return reject('targetIndex가 정수가 아님');
   if (!allowed.has(targetIndex as number)) return reject(`targetIndex ${targetIndex} 허용 집합 밖`);
   if (!PLAN_ACTIONS.includes(action as PlanAction)) return reject(`알 수 없는 행동 ${String(action)}`);
-  if (!EXECUTABLE_ACTIONS.has(action as PlanAction)) return reject(`실행 불가 행동 ${String(action)}`);
+  if (action !== permitted) return reject(`이 역할에 허용되지 않은 행동 ${String(action)}`);
 
   return { targetIndex: targetIndex as number, action: action as PlanAction };
 }

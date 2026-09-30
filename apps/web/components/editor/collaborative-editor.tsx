@@ -11,7 +11,7 @@ import TextAlign from '@tiptap/extension-text-align';
 import { PaginationPlus } from 'tiptap-pagination-plus';
 import { DOC_FIELD } from '@co-pen/shared';
 import type { RoomSession } from '@/lib/collab/room-session';
-import { AiSuggestion, pendingSuggestions } from '@/lib/editor/ai-suggestion';
+import { AiDeletion, AiSuggestion, pendingSuggestions } from '@/lib/editor/ai-suggestion';
 import { A4, PAGED_VIEW_MIN_WIDTH } from '@/lib/editor/formats';
 import { BlockLineHeight } from '@/lib/editor/line-height';
 import { MentionTrigger } from '@/lib/editor/mention-trigger';
@@ -34,8 +34,8 @@ export function CollaborativeEditor({ session }: { session: RoomSession }) {
         Placeholder.configure({
           placeholder: ({ editor: current }) =>
             current.isEmpty
-              ? '여기에 내용을 입력하세요. 문단 첫머리에 @AI 요청을 쓰고 Enter를 누르면 AI가 함께 씁니다.'
-              : '@AI 요청을 입력하고 Enter',
+              ? '여기에 내용을 입력하세요. 문단 첫머리에 @초안 요청을 쓰고 Enter를 누르면 AI가 함께 씁니다.'
+              : '@초안 요청 또는 @교정을 입력하고 Enter',
         }),
         TextStyle,
         FontFamily,
@@ -56,6 +56,7 @@ export function CollaborativeEditor({ session }: { session: RoomSession }) {
           footerRight: '{page}',
         }),
         AiSuggestion,
+        AiDeletion,
         MentionTrigger.configure({
           // Enter로 문단이 나뉜 다음 보내야 워커가 그 새 줄까지 본 상태에서 위치를 정한다
           onMention: ({ prompt, mentionText }) =>
@@ -109,9 +110,9 @@ export function CollaborativeEditor({ session }: { session: RoomSession }) {
         <AgentPanel
           provider={provider}
           suggestions={suggestions ?? []}
-          onAccept={(jobId) => editor?.chain().focus().acceptAiSuggestion(jobId).run()}
+          onAccept={(jobId, force) => editor?.chain().focus().acceptAiSuggestion(jobId, { force }).run()}
           onReject={(jobId) => editor?.chain().focus().rejectAiSuggestion(jobId).run()}
-          onUndoAgent={() => send({ type: 'agent:undo', requestedBy: user.name })}
+          onUndoAgent={(agentId) => send({ type: 'agent:undo', requestedBy: user.name, agentId })}
         />
       </div>
     </div>

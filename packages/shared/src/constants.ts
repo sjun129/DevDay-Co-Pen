@@ -7,21 +7,8 @@ export const AGENT_ORIGIN = 'co-pen-agent';
 /** AI가 삽입한 텍스트에 붙는 제안 마크 이름 (F8). 에디터 Mark 이름과 반드시 같아야 한다. */
 export const AI_SUGGESTION_MARK = 'aiSuggestion';
 
-/** "@AI 3장 결론 써줘" 형태의 멘션. 문단 첫머리에서만 인식한다. */
-export const MENTION_PATTERN = /^@(?:AI|초안)\s+(.+)$/i;
-
-/** 멘션 문단 최대 길이. 지시 채널(L1)로 들어가는 유일한 입력이라 짧게 제한한다. */
-export const MAX_MENTION_LENGTH = 500;
-
-/**
- * 멘션 문단 텍스트에서 요청 본문을 꺼낸다. 형식이 아니거나 너무 길면 null.
- * 브라우저·동기화 서버·워커가 같은 규칙을 쓰도록 여기 한 곳에 둔다.
- */
-export function extractMentionPrompt(mentionText: string): string | null {
-  const text = mentionText.trim();
-  if (text.length > MAX_MENTION_LENGTH) return null;
-  return text.match(MENTION_PATTERN)?.[1]?.trim() || null;
-}
+/** 교정 에이전트가 고쳐 쓸 원문에 붙이는 마크 이름. 에디터 Mark 이름과 반드시 같아야 한다. */
+export const AI_DELETION_MARK = 'aiDeletion';
 
 export type ParticipantKind = 'human' | 'agent';
 
@@ -30,13 +17,9 @@ export interface AwarenessUser {
   name: string;
   color: string;
   kind: ParticipantKind;
+  /** kind가 agent일 때 역할 (packages/shared/src/agents.ts) */
+  agentId?: string;
 }
-
-export const AGENT_USER: AwarenessUser = {
-  name: 'Co-Pen AI',
-  color: '#7c3aed',
-  kind: 'agent',
-};
 
 export const HUMAN_COLORS = [
   '#e11d48',

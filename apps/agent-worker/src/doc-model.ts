@@ -67,3 +67,33 @@ export function insertParagraph(fragment: Y.XmlFragment, index: number): Y.XmlTe
   fragment.insert(Math.min(index, fragment.length), [paragraph]);
   return text;
 }
+
+/** 문단의 고유 ID (Yjs 항목 ID). 문단 번호와 달리 위에 문단이 끼어들어도 변하지 않는다. */
+export function blockId(node: Y.XmlElement | Y.XmlText | Y.XmlHook): string {
+  const id = node._item?.id;
+  return id ? `${id.client}:${id.clock}` : 'unknown';
+}
+
+function textChildren(block: Y.XmlElement): Y.XmlText[] {
+  return block.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText);
+}
+
+/** 에디터의 textContent와 같은 값 (줄바꿈 노드 등 글자가 아닌 것은 뺀다). 원문 지문 계산용. */
+export function blockText(block: Y.XmlElement): string {
+  return textChildren(block)
+    .flatMap((text) => text.toDelta() as { insert?: unknown }[])
+    .map((op) => (typeof op.insert === 'string' ? op.insert : ''))
+    .join('');
+}
+
+/** 아직 수락·거절하지 않은 AI 표시가 남아 있는 문단인지 */
+export function hasPendingAiMark(block: Y.XmlElement, markNames: string[]): boolean {
+  return textChildren(block)
+    .flatMap((text) => text.toDelta() as { attributes?: Record<string, unknown> }[])
+    .some((op) => markNames.some((name) => op.attributes?.[name]));
+}
+
+/** 문단의 모든 글자에 텍스트 속성(마크)을 입힌다 */
+export function formatBlock(block: Y.XmlElement, attributes: Record<string, unknown>) {
+  for (const text of textChildren(block)) text.format(0, text.length, attributes);
+}

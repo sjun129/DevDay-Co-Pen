@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Server } from '@hocuspocus/server';
 import {
-  extractMentionPrompt,
+  isAgentId,
+  parseMention,
   parseStatelessMessage,
   type AgentStatelessMessage,
   type ParticipantKind,
@@ -65,29 +66,39 @@ const server = new Server<ConnectionContext>({
 
     try {
       if (message.type === 'agent:mention') {
-        // L1: 지시는 사람이 친 멘션 문단에서만 나온다. 클라이언트가 보낸 prompt를 믿지 않고 다시 꺼낸다.
-        const prompt =
-          typeof message.mentionText === 'string' ? extractMentionPrompt(message.mentionText) : null;
-        if (!prompt || typeof message.stateVector !== 'string') return;
+        // L1: 지시와 담당 에이전트는 사람이 친 멘션 문단에서만 나온다. 클라이언트가 보낸 prompt를 믿지 않고 다시 꺼낸다.
+        const mention = typeof message.mentionText === 'string' ? parseMention(message.mentionText) : null;
+        if (!mention || typeof message.stateVector !== 'string') return;
 
         const jobId = randomUUID();
-        const queued: AgentStatelessMessage = { type: 'agent:status', jobId, status: 'queued' };
+        const queued: AgentStatelessMessage = {
+          type: 'agent:status',
+          agentId: mention.agentId,
+          jobId,
+          status: 'queued',
+        };
         document.broadcastStateless(JSON.stringify(queued));
         await dispatchJob({
           jobId,
+          agentId: mention.agentId,
           documentName,
-          prompt,
+          prompt: mention.prompt,
           requestedBy: String(message.requestedBy).slice(0, 40),
           mentionText: message.mentionText.trim(),
           stateVector: message.stateVector,
         });
       } else {
-        await dispatchUndo({ documentName, requestedBy: message.requestedBy });
+        await dispatchUndo({
+          documentName,
+          requestedBy: String(message.requestedBy).slice(0, 40),
+          agentId: isAgentId(message.agentId) ? message.agentId : undefined,
+        });
       }
     } catch (error) {
       logDispatchError(error);
       const failed: AgentStatelessMessage = {
         type: 'agent:status',
+        agentId: 'draft',
         jobId: 'dispatch',
         status: 'error',
         message: '에이전트 워커에 연결할 수 없습니다.',

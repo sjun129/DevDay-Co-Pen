@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
-import { AGENT_ORIGIN, AI_SUGGESTION_MARK } from '@co-pen/shared';
+import { AGENT_ORIGIN, AI_SUGGESTION_MARK, type AgentId } from '@co-pen/shared';
 import { insertParagraph } from './doc-model';
 
 /**
@@ -23,8 +23,9 @@ export class StreamWriter {
     private readonly awareness: Awareness | null,
     private readonly flushIntervalMs: number,
     jobId: string,
+    agentId: AgentId,
   ) {
-    this.attributes = { [AI_SUGGESTION_MARK]: { jobId } };
+    this.attributes = { [AI_SUGGESTION_MARK]: { jobId, agentId } };
     this.moveCursor();
   }
 

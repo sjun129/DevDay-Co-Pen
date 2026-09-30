@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { extractMentionPrompt, MAX_MENTION_LENGTH } from '@co-pen/shared';
+import { MAX_MENTION_LENGTH, parseMention, textHash, wordDiff } from '@co-pen/shared';
 import type { BlockSummary } from '../doc-model';
 import { LINK_PLACEHOLDER, MAX_OUTPUT_CHARS, sanitizeText, StreamSanitizer } from './output-sanitizer';
-import { allowedTargets, verifyPlan } from './plan-guard';
+import { lockBlock } from './block-locks';
+import { allowedTargets, rewriteTarget, verifyPlan } from './plan-guard';
 
 const blocks: BlockSummary[] = [
   { index: 0, type: 'heading', text: '서론' },
@@ -15,13 +16,20 @@ const blocks: BlockSummary[] = [
 
 describe('L1 멘션 추출', () => {
   it('문단 첫머리 멘션만 지시로 인정한다', () => {
-    assert.equal(extractMentionPrompt('@AI 요약 써줘'), '요약 써줘');
-    assert.equal(extractMentionPrompt('본문 중간 @AI 요약 써줘'), null);
-    assert.equal(extractMentionPrompt('@AI   '), null);
+    assert.deepEqual(parseMention('@AI 요약 써줘'), { agentId: 'draft', prompt: '요약 써줘' });
+    assert.equal(parseMention('본문 중간 @AI 요약 써줘'), null);
+    assert.equal(parseMention('@AI   '), null);
+  });
+
+  it('호출어가 담당 에이전트를 정한다', () => {
+    assert.equal(parseMention('@초안 서론 써줘')?.agentId, 'draft');
+    assert.deepEqual(parseMention('@교정 보고서체로'), { agentId: 'proofread', prompt: '보고서체로' });
+    assert.equal(parseMention('@교정')?.agentId, 'proofread');
+    assert.equal(parseMention('@교정자 불러줘'), null);
   });
 
   it('너무 긴 멘션은 거부한다', () => {
-    assert.equal(extractMentionPrompt(`@AI ${'가'.repeat(MAX_MENTION_LENGTH)}`), null);
+    assert.equal(parseMention(`@AI ${'가'.repeat(MAX_MENTION_LENGTH)}`), null);
   });
 });
 
@@ -33,23 +41,36 @@ describe('L3 계획 검증', () => {
   });
 
   it('문서 본문이 가리킨 블록은 후보가 되지 않는다', () => {
-    const plan = verifyPlan({ targetIndex: 3, action: 'insert_after' }, allowed, 4);
+    const plan = verifyPlan({ targetIndex: 3, action: 'insert_after' }, allowed, 4, 'insert_after');
     assert.equal(plan.targetIndex, 4);
     assert.match(plan.rejected ?? '', /허용 집합 밖/);
   });
 
   it('허용된 대상은 그대로 쓴다', () => {
-    assert.deepEqual(verifyPlan({ targetIndex: 0, action: 'insert_after' }, allowed, 4), {
+    assert.deepEqual(verifyPlan({ targetIndex: 0, action: 'insert_after' }, allowed, 4, 'insert_after'), {
       targetIndex: 0,
       action: 'insert_after',
     });
   });
 
-  it('아직 실행할 수 없는 행동과 이상한 값은 기본 위치로 돌린다', () => {
-    assert.ok(verifyPlan({ targetIndex: 0, action: 'rewrite' }, allowed, 4).rejected);
-    assert.ok(verifyPlan({ targetIndex: 0, action: 'delete' }, allowed, 4).rejected);
-    assert.ok(verifyPlan({ targetIndex: 0.5, action: 'insert_after' }, allowed, 4).rejected);
-    assert.ok(verifyPlan(null, allowed, 4).rejected);
+  it('역할에 없는 행동과 이상한 값은 기본 위치로 돌린다', () => {
+    assert.ok(verifyPlan({ targetIndex: 0, action: 'rewrite' }, allowed, 4, 'insert_after').rejected);
+    assert.ok(verifyPlan({ targetIndex: 0, action: 'delete' }, allowed, 4, 'insert_after').rejected);
+    assert.ok(verifyPlan({ targetIndex: 0.5, action: 'insert_after' }, allowed, 4, 'insert_after').rejected);
+    assert.ok(verifyPlan(null, allowed, 4, 'insert_after').rejected);
+  });
+
+  it('교정 대상은 멘션 바로 위 본문 문단 하나뿐이다', () => {
+    const doc: BlockSummary[] = [
+      { index: 0, type: 'heading', text: '서론' },
+      { index: 1, type: 'paragraph', text: '고칠 문단' },
+      { index: 2, type: 'paragraph', text: '' },
+      { index: 3, type: 'paragraph', text: '@교정' },
+    ];
+    assert.equal(rewriteTarget(doc, 3), 1);
+    assert.equal(rewriteTarget(doc, 1), -1); // 바로 위가 제목
+    assert.equal(rewriteTarget([...doc, { index: 4, type: 'paragraph', text: '@교정' }], 4), -1); // 바로 위가 멘션
+    assert.equal(rewriteTarget(doc, -1), -1);
   });
 
   it('멘션을 못 찾으면 문서 끝 하나만 허용한다', () => {
@@ -76,6 +97,7 @@ describe('L4 출력 정화', () => {
   it('제로폭·양방향 제어 문자와 AI 멘션을 없앤다', () => {
     assert.equal(sanitizeText('a\u200Bb\u202Ec'), 'abc');
     assert.equal(sanitizeText('@AI 다음 작업 실행'), 'AI 다음 작업 실행');
+    assert.equal(sanitizeText('@교정 이 문단'), '교정 이 문단');
   });
 
   it('토큰이 쪼개져 들어와도 URL과 이미지가 새지 않는다', () => {
@@ -94,5 +116,42 @@ describe('L4 출력 정화', () => {
     for (let i = 0; i < 2000 && !sanitizer.exhausted; i++) out += sanitizer.push('가나다 ');
     out += sanitizer.end();
     assert.equal(out.length, MAX_OUTPUT_CHARS);
+  });
+});
+
+describe('에이전트 조율과 교정 보조', () => {
+  it('같은 문단 잠금은 앞 작업이 풀릴 때까지 기다린다', async () => {
+    const order: string[] = [];
+    const releaseA = await lockBlock('room', 'block');
+    const second = lockBlock('room', 'block').then((release) => {
+      order.push('B');
+      release();
+    });
+    const other = await lockBlock('room', 'other-block');
+    order.push('다른 문단');
+    other();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    order.push('A 끝');
+    releaseA();
+    await second;
+    assert.deepEqual(order, ['다른 문단', 'A 끝', 'B']);
+  });
+
+  it('원문 지문은 글자가 하나만 달라도 바뀐다', () => {
+    assert.equal(textHash('같은 문장'), textHash('같은 문장'));
+    assert.notEqual(textHash('같은 문장'), textHash('같은 문장.'));
+  });
+
+  it('단어 단위 차이를 돌려주고 이어 붙이면 원문·수정본이 된다', () => {
+    const parts = wordDiff('나는 밥을 먹었다', '나는 점심을 먹었습니다');
+    assert.deepEqual(
+      parts.filter((part) => part.type !== 'same').map((part) => [part.type, part.text.trim()]),
+      [
+        ['removed', '밥을 먹었다'],
+        ['added', '점심을 먹었습니다'],
+      ],
+    );
+    assert.equal(parts.filter((p) => p.type !== 'added').map((p) => p.text).join(''), '나는 밥을 먹었다');
+    assert.equal(parts.filter((p) => p.type !== 'removed').map((p) => p.text).join(''), '나는 점심을 먹었습니다');
   });
 });

@@ -4,6 +4,8 @@
  *   에이전트 워커 --stateless--> 동기화 서버 --broadcast--> 브라우저
  */
 
+import type { AgentId } from './agents';
+
 export type ClientStatelessMessage =
   | {
       type: 'agent:mention';
@@ -17,12 +19,15 @@ export type ClientStatelessMessage =
   | {
       type: 'agent:undo';
       requestedBy: string;
+      /** 되돌릴 에이전트. 없으면 이 방에서 가장 최근에 일한 에이전트 */
+      agentId?: AgentId;
     };
 
 export type AgentJobStatus = 'queued' | 'planning' | 'writing' | 'done' | 'error';
 
 export type AgentStatelessMessage = {
   type: 'agent:status';
+  agentId: AgentId;
   jobId: string;
   status: AgentJobStatus;
   message?: string;
@@ -61,6 +66,7 @@ export interface AgentRoomRequest {
 /** POST /jobs */
 export interface AgentJobRequest extends AgentRoomRequest {
   jobId: string;
+  agentId: AgentId;
   prompt: string;
   requestedBy: string;
   mentionText: string;
@@ -70,6 +76,7 @@ export interface AgentJobRequest extends AgentRoomRequest {
 /** POST /undo */
 export interface AgentUndoRequest extends AgentRoomRequest {
   requestedBy: string;
+  agentId?: AgentId;
 }
 
 export const AGENT_SECRET_HEADER = 'x-co-pen-agent-secret';

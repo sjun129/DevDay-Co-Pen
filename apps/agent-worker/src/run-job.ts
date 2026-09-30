@@ -1,16 +1,31 @@
 import * as Y from 'yjs';
-import { AGENT_ORIGIN, extractMentionPrompt, type AgentJobRequest } from '@co-pen/shared';
+import {
+  AGENT_ORIGIN,
+  AGENT_ROLES,
+  AI_DELETION_MARK,
+  AI_SUGGESTION_MARK,
+  parseMention,
+  textHash,
+  type AgentJobRequest,
+} from '@co-pen/shared';
 import {
   anchorAfterEachBlock,
+  blockId,
+  blockText,
   findMentionBlock,
+  formatBlock,
   getFragment,
+  hasPendingAiMark,
   insertParagraph,
   resolveBlockIndex,
   summarizeBlocks,
+  type BlockSummary,
 } from './doc-model';
 import { env } from './env';
+import { lockBlock } from './guard/block-locks';
 import { StreamSanitizer } from './guard/output-sanitizer';
-import { planEdit, streamDraft } from './llm';
+import { rewriteTarget } from './guard/plan-guard';
+import { planEdit, streamDraft, streamRewrite } from './llm';
 import type { AgentSession } from './session';
 import { StreamWriter } from './stream-writer';
 
@@ -47,56 +62,140 @@ function waitForRequesterState(doc: Y.Doc, stateVector: string): Promise<void> {
   });
 }
 
-export async function runJob(session: AgentSession, job: AgentJobRequest) {
-  const { doc } = session;
-  const fragment = getFragment(doc);
-  const status = (value: 'planning' | 'writing' | 'done') =>
-    session.sendStatus({ type: 'agent:status', jobId: job.jobId, status: value });
+/** 요청자에게 그대로 보여 줄 수 있는 실패 사유 */
+export class JobError extends Error {}
 
-  // L1: 지시는 사람이 친 멘션 문단에서만 꺼낸다
-  const prompt = extractMentionPrompt(job.mentionText);
-  if (!prompt) throw new Error('멘션 형식이 아닌 요청');
+interface JobContext {
+  session: AgentSession;
+  job: AgentJobRequest;
+  prompt: string;
+  blocks: BlockSummary[];
+  mentionIndex: number;
+  status: (value: 'planning' | 'writing' | 'done') => void;
+}
+
+export async function runJob(session: AgentSession, job: AgentJobRequest) {
+  const { doc, agentId } = session;
+  const status = (value: 'planning' | 'writing' | 'done') =>
+    session.sendStatus({ type: 'agent:status', agentId, jobId: job.jobId, status: value });
+
+  // L1: 지시와 담당 에이전트는 사람이 친 멘션 문단에서만 꺼낸다
+  const mention = parseMention(job.mentionText);
+  if (!mention || mention.agentId !== agentId) throw new JobError('멘션 형식이 아닌 요청이에요.');
 
   status('planning');
   await waitForRequesterState(doc, job.stateVector);
-  const blocks = summarizeBlocks(fragment);
-  // 계획(LLM 호출) 전에 앵커를 걸어 두어야 그 사이의 사람 편집에도 위치가 유지된다
-  const anchors = anchorAfterEachBlock(fragment);
-  const plan = await planEdit({
-    prompt,
+  const blocks = summarizeBlocks(getFragment(doc));
+  const context: JobContext = {
+    session,
+    job,
+    prompt: mention.prompt,
     blocks,
     mentionIndex: findMentionBlock(blocks, job.mentionText),
-  });
+    status,
+  };
 
-  session.undoManager.stopCapturing();
-  let target!: Y.XmlText;
-  doc.transact(() => {
-    target = insertParagraph(fragment, resolveBlockIndex(doc, anchors[plan.targetIndex]));
-  }, AGENT_ORIGIN);
+  // 역할마다 할 수 있는 행동은 하나뿐이다 (L3)
+  if (AGENT_ROLES[agentId].action === 'rewrite') await rewriteBlock(context);
+  else await insertDraft(context);
+  status('done');
+}
 
-  status('writing');
+/** 초안 작성자: 허용된 위치 뒤에 새 문단을 쓴다 */
+async function insertDraft({ session, job, prompt, blocks, mentionIndex, status }: JobContext) {
+  const { doc } = session;
+  const fragment = getFragment(doc);
+  // 계획(LLM 호출) 전에 앵커를 걸어 두어야 그 사이의 사람 편집에도 위치가 유지된다
+  const anchors = anchorAfterEachBlock(fragment);
+  const nodes = fragment.toArray();
+  const plan = await planEdit({ prompt, blocks, mentionIndex });
+
+  // 다른 에이전트가 이 문단을 고쳐 쓰는 중이면 끝날 때까지 기다린다
+  const anchorBlock = nodes[plan.targetIndex];
+  const release = anchorBlock ? await lockBlock(session.documentName, blockId(anchorBlock)) : () => {};
+  try {
+    session.undoManager.stopCapturing();
+    let target!: Y.XmlText;
+    doc.transact(() => {
+      target = insertParagraph(fragment, resolveBlockIndex(doc, anchors[plan.targetIndex]));
+    }, AGENT_ORIGIN);
+
+    status('writing');
+    await streamInto(session, job, target, streamDraft({ prompt, targetIndex: plan.targetIndex, blocks }));
+  } finally {
+    release();
+  }
+}
+
+/**
+ * 문체 교정자: 멘션 바로 위 문단 하나를 고쳐 쓴다.
+ * 원문은 지우지 않고 aiDeletion 표시만 하고, 수정본을 바로 아래 새 문단에 제안으로 쓴다.
+ * 원문 지문(base)을 함께 남겨 두어, 수락할 때 그 사이 사람이 원문을 고쳤는지 알 수 있다.
+ */
+async function rewriteBlock({ session, job, prompt, blocks, mentionIndex, status }: JobContext) {
+  const { doc, agentId } = session;
+  const fragment = getFragment(doc);
+
+  const targetIndex = rewriteTarget(blocks, mentionIndex);
+  const block = fragment.toArray()[targetIndex];
+  if (!(block instanceof Y.XmlElement)) {
+    throw new JobError('고칠 문단을 찾지 못했어요. 고칠 문단 바로 아래 줄에 @교정을 써 주세요.');
+  }
+
+  const release = await lockBlock(session.documentName, blockId(block));
+  try {
+    // 기다리는 동안 문단이 지워졌거나 다른 제안이 붙었을 수 있다
+    const index = fragment.toArray().indexOf(block);
+    const original = blockText(block);
+    if (index < 0 || !original.trim()) throw new JobError('고칠 문단이 그 사이에 사라졌어요.');
+    if (hasPendingAiMark(block, [AI_SUGGESTION_MARK, AI_DELETION_MARK])) {
+      throw new JobError('아직 검토하지 않은 AI 제안이 있는 문단이에요. 먼저 수락하거나 거절해 주세요.');
+    }
+
+    session.undoManager.stopCapturing();
+    let target!: Y.XmlText;
+    doc.transact(() => {
+      formatBlock(block, {
+        [AI_DELETION_MARK]: { jobId: job.jobId, agentId, base: textHash(original) },
+      });
+      target = insertParagraph(fragment, index + 1);
+    }, AGENT_ORIGIN);
+
+    status('writing');
+    await streamInto(session, job, target, streamRewrite({ prompt, original }));
+  } finally {
+    release();
+  }
+}
+
+async function streamInto(
+  session: AgentSession,
+  job: AgentJobRequest,
+  target: Y.XmlText,
+  stream: AsyncIterable<string>,
+) {
   const writer = new StreamWriter(
-    doc,
-    fragment,
+    session.doc,
+    getFragment(session.doc),
     target,
     session.provider.awareness,
     env.flushIntervalMs,
     job.jobId,
+    session.agentId,
   );
   // L4: 모델 출력은 정화기를 거쳐서만 문서에 들어간다
   const sanitizer = new StreamSanitizer();
   try {
-    for await (const chunk of streamDraft({ prompt, targetIndex: plan.targetIndex, blocks })) {
+    for await (const chunk of stream) {
       writer.push(sanitizer.push(chunk));
       if (sanitizer.exhausted) break;
     }
     writer.push(sanitizer.end());
     writer.close();
   } catch (error) {
-    // 모델 호출이 실패하면 이 작업이 넣은 문단을 남기지 않는다
+    // 모델 호출이 실패하면 이 작업이 문서에 남긴 것(새 문단, 원문 표시)을 되돌린다
     writer.close();
     session.undoManager.undo();
     throw error;
   }
-  status('done');
 }
