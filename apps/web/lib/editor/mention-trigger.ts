@@ -1,5 +1,5 @@
 import { Extension } from '@tiptap/core';
-import { MENTION_PATTERN } from '@co-pen/shared';
+import { extractMentionPrompt } from '@co-pen/shared';
 
 export interface MentionTriggerOptions {
   onMention: (mention: { prompt: string; mentionText: string }) => void;
@@ -24,7 +24,7 @@ export const MentionTrigger = Extension.create<MentionTriggerOptions>({
         if (!empty || $from.parentOffset !== $from.parent.content.size) return false;
 
         const mentionText = $from.parent.textContent.trim();
-        const prompt = mentionText.match(MENTION_PATTERN)?.[1]?.trim();
+        const prompt = extractMentionPrompt(mentionText);
         if (prompt) this.options.onMention({ prompt, mentionText });
         return false;
       },

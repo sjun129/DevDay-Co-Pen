@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import { AGENT_ORIGIN, type AgentJobRequest } from '@co-pen/shared';
+import { AGENT_ORIGIN, extractMentionPrompt, type AgentJobRequest } from '@co-pen/shared';
 import {
   anchorAfterEachBlock,
   findMentionBlock,
@@ -9,6 +9,7 @@ import {
   summarizeBlocks,
 } from './doc-model';
 import { env } from './env';
+import { StreamSanitizer } from './guard/output-sanitizer';
 import { planEdit, streamDraft } from './llm';
 import type { AgentSession } from './session';
 import { StreamWriter } from './stream-writer';
@@ -52,13 +53,17 @@ export async function runJob(session: AgentSession, job: AgentJobRequest) {
   const status = (value: 'planning' | 'writing' | 'done') =>
     session.sendStatus({ type: 'agent:status', jobId: job.jobId, status: value });
 
+  // L1: 지시는 사람이 친 멘션 문단에서만 꺼낸다
+  const prompt = extractMentionPrompt(job.mentionText);
+  if (!prompt) throw new Error('멘션 형식이 아닌 요청');
+
   status('planning');
   await waitForRequesterState(doc, job.stateVector);
   const blocks = summarizeBlocks(fragment);
   // 계획(LLM 호출) 전에 앵커를 걸어 두어야 그 사이의 사람 편집에도 위치가 유지된다
   const anchors = anchorAfterEachBlock(fragment);
   const plan = await planEdit({
-    prompt: job.prompt,
+    prompt,
     blocks,
     mentionIndex: findMentionBlock(blocks, job.mentionText),
   });
@@ -78,8 +83,14 @@ export async function runJob(session: AgentSession, job: AgentJobRequest) {
     env.flushIntervalMs,
     job.jobId,
   );
+  // L4: 모델 출력은 정화기를 거쳐서만 문서에 들어간다
+  const sanitizer = new StreamSanitizer();
   try {
-    for await (const chunk of streamDraft({ plan, blocks })) writer.push(chunk);
+    for await (const chunk of streamDraft({ prompt, targetIndex: plan.targetIndex, blocks })) {
+      writer.push(sanitizer.push(chunk));
+      if (sanitizer.exhausted) break;
+    }
+    writer.push(sanitizer.end());
   } finally {
     writer.close();
   }
