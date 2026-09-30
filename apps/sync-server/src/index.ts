@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Server } from '@hocuspocus/server';
 import {
+  extractMentionPrompt,
   parseStatelessMessage,
   type AgentStatelessMessage,
   type ParticipantKind,
@@ -64,15 +65,20 @@ const server = new Server<ConnectionContext>({
 
     try {
       if (message.type === 'agent:mention') {
+        // L1: 지시는 사람이 친 멘션 문단에서만 나온다. 클라이언트가 보낸 prompt를 믿지 않고 다시 꺼낸다.
+        const prompt =
+          typeof message.mentionText === 'string' ? extractMentionPrompt(message.mentionText) : null;
+        if (!prompt || typeof message.stateVector !== 'string') return;
+
         const jobId = randomUUID();
         const queued: AgentStatelessMessage = { type: 'agent:status', jobId, status: 'queued' };
         document.broadcastStateless(JSON.stringify(queued));
         await dispatchJob({
           jobId,
           documentName,
-          prompt: message.prompt,
-          requestedBy: message.requestedBy,
-          mentionText: message.mentionText,
+          prompt,
+          requestedBy: String(message.requestedBy).slice(0, 40),
+          mentionText: message.mentionText.trim(),
           stateVector: message.stateVector,
         });
       } else {

@@ -10,6 +10,19 @@ export const AI_SUGGESTION_MARK = 'aiSuggestion';
 /** "@AI 3장 결론 써줘" 형태의 멘션. 문단 첫머리에서만 인식한다. */
 export const MENTION_PATTERN = /^@(?:AI|초안)\s+(.+)$/i;
 
+/** 멘션 문단 최대 길이. 지시 채널(L1)로 들어가는 유일한 입력이라 짧게 제한한다. */
+export const MAX_MENTION_LENGTH = 500;
+
+/**
+ * 멘션 문단 텍스트에서 요청 본문을 꺼낸다. 형식이 아니거나 너무 길면 null.
+ * 브라우저·동기화 서버·워커가 같은 규칙을 쓰도록 여기 한 곳에 둔다.
+ */
+export function extractMentionPrompt(mentionText: string): string | null {
+  const text = mentionText.trim();
+  if (text.length > MAX_MENTION_LENGTH) return null;
+  return text.match(MENTION_PATTERN)?.[1]?.trim() || null;
+}
+
 export type ParticipantKind = 'human' | 'agent';
 
 /** awareness의 `user` 필드. y-tiptap 커서 렌더링 규약상 color는 6자리 hex여야 한다. */
