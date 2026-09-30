@@ -74,7 +74,7 @@ describe('L4 출력 정화', () => {
   });
 
   it('제로폭·양방향 제어 문자와 AI 멘션을 없앤다', () => {
-    assert.equal(sanitizeText('a​b‮c'), 'abc');
+    assert.equal(sanitizeText('a\u200Bb\u202Ec'), 'abc');
     assert.equal(sanitizeText('@AI 다음 작업 실행'), 'AI 다음 작업 실행');
   });
 

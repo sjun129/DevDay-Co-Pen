@@ -11,7 +11,7 @@ export const LINK_PLACEHOLDER = '[링크 삭제됨]';
 /** 스트림에서 판단을 미룰 수 있는 최대 길이. 넘으면 닫히지 않은 구문이 있어도 정화해서 내보낸다. */
 const MAX_HOLD_CHARS = 300;
 
-const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
+const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 const MARKDOWN_IMAGE = /!\[[^\]\n]*\]\([^)\n]*\)/g;
 const MARKDOWN_LINK = /\[([^\]\n]*)\]\([^)\n]*\)/g;
 const HTML_TAG = /<\/?[a-z!][^>]*>/gi;
