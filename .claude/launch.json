@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sync",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@co-pen/sync-server"],
+      "port": 1234
+    },
+    {
+      "name": "agent",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@co-pen/agent-worker"],
+      "port": 1235
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@co-pen/web"],
+      "port": 3000
+    }
+  ]
+}

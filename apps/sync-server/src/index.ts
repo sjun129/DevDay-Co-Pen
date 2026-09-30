@@ -1,0 +1,94 @@
+import { randomUUID } from 'node:crypto';
+import { Server } from '@hocuspocus/server';
+import {
+  parseStatelessMessage,
+  type AgentStatelessMessage,
+  type ParticipantKind,
+} from '@co-pen/shared';
+import { dispatchJob, dispatchJoin, dispatchLeave, dispatchUndo } from './agent-dispatch';
+import { env } from './env';
+import { createPersistence } from './persistence';
+
+interface ConnectionContext {
+  kind: ParticipantKind;
+}
+
+/** 방별 사람 접속 수. 첫 사람이 들어오면 에이전트를 부르고, 마지막 사람이 나가면 내보낸다. */
+const humansInRoom = new Map<string, number>();
+
+function logDispatchError(error: unknown) {
+  console.error('[agent-dispatch]', error);
+}
+
+const server = new Server<ConnectionContext>({
+  name: 'co-pen-sync',
+  port: env.port,
+  debounce: 2000,
+  maxDebounce: 10000,
+  extensions: [createPersistence()],
+
+  // F3: 로그인 없이 링크로 입장. 토큰은 사람/에이전트 구분에만 쓴다.
+  async onAuthenticate({ token }) {
+    return { kind: token === env.agentSharedSecret ? 'agent' : 'human' } satisfies ConnectionContext;
+  },
+
+  async connected({ context, documentName }) {
+    if (context.kind !== 'human') return;
+    const count = (humansInRoom.get(documentName) ?? 0) + 1;
+    humansInRoom.set(documentName, count);
+    if (count === 1) dispatchJoin(documentName).catch(logDispatchError);
+  },
+
+  async onDisconnect({ context, documentName }) {
+    if (context.kind !== 'human') return;
+    const count = (humansInRoom.get(documentName) ?? 1) - 1;
+    if (count > 0) {
+      humansInRoom.set(documentName, count);
+      return;
+    }
+    humansInRoom.delete(documentName);
+    dispatchLeave(documentName).catch(logDispatchError);
+  },
+
+  async onStateless({ payload, document, documentName, connection }) {
+    const message = parseStatelessMessage(payload);
+    if (!message) return;
+
+    const { kind } = connection.context as ConnectionContext;
+
+    if (message.type === 'agent:status') {
+      if (kind === 'agent') document.broadcastStateless(payload);
+      return;
+    }
+    if (kind !== 'human') return;
+
+    try {
+      if (message.type === 'agent:mention') {
+        const jobId = randomUUID();
+        const queued: AgentStatelessMessage = { type: 'agent:status', jobId, status: 'queued' };
+        document.broadcastStateless(JSON.stringify(queued));
+        await dispatchJob({
+          jobId,
+          documentName,
+          prompt: message.prompt,
+          requestedBy: message.requestedBy,
+          mentionText: message.mentionText,
+          stateVector: message.stateVector,
+        });
+      } else {
+        await dispatchUndo({ documentName, requestedBy: message.requestedBy });
+      }
+    } catch (error) {
+      logDispatchError(error);
+      const failed: AgentStatelessMessage = {
+        type: 'agent:status',
+        jobId: 'dispatch',
+        status: 'error',
+        message: '에이전트 워커에 연결할 수 없습니다.',
+      };
+      document.broadcastStateless(JSON.stringify(failed));
+    }
+  },
+});
+
+await server.listen();

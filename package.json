@@ -1,0 +1,24 @@
+{
+  "name": "co-pen",
+  "private": true,
+  "description": "AI가 커서를 가진 팀원으로 참여하는 실시간 협업 에디터",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n sync,agent,web -c blue,magenta,green \"npm run dev -w @co-pen/sync-server\" \"npm run dev -w @co-pen/agent-worker\" \"npm run dev -w @co-pen/web\"",
+    "dev:sync": "npm run dev -w @co-pen/sync-server",
+    "dev:agent": "npm run dev -w @co-pen/agent-worker",
+    "dev:web": "npm run dev -w @co-pen/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @co-pen/web"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "typescript": "~5.9.3"
+  }
+}
