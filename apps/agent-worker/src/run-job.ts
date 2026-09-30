@@ -91,8 +91,12 @@ export async function runJob(session: AgentSession, job: AgentJobRequest) {
       if (sanitizer.exhausted) break;
     }
     writer.push(sanitizer.end());
-  } finally {
     writer.close();
+  } catch (error) {
+    // 모델 호출이 실패하면 이 작업이 넣은 문단을 남기지 않는다
+    writer.close();
+    session.undoManager.undo();
+    throw error;
   }
   status('done');
 }

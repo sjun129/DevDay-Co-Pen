@@ -38,7 +38,7 @@ npm run dev   # sync :1234, agent :1235, web :3000
 ```
 
 - `OPENAI_API_KEY`가 비어 있으면 워커가 **목업 스트림**으로 답한다.
-- 모델은 Qwen을 쓰기로 했다(2026-09-30). `OPENAI_BASE_URL`에 OpenAI 호환 주소를 넣으면 워커가 Chat Completions로 호출한다. 실제 Qwen 키로는 미검증(가짜 호환 서버로 호출 경로만 확인).
+- 모델은 OpenAI 호환 주소(`OPENAI_BASE_URL`)로 바꿔 쓴다. 워커는 Chat Completions로 호출한다. 2026-09-30 현재 개발용은 Gemini 무료 등급(`gemini-flash-lite-latest`)으로 실제 응답까지 브라우저에서 확인했다. `gemini-3.8-flash`는 같은 날 503(과부하)이 잦았다. Qwen은 키가 생기면 주소·키·모델명 세 줄만 바꾸면 되나 미검증.
 - Supabase 값이 비어 있으면 `apps/sync-server/.data/`에 파일로 저장한다.
 - Claude 데스크톱 브라우저 미리보기용 설정: `.claude/launch.json` (`sync`, `agent`, `web`).
 - 검증 명령: `npm run typecheck`, `npm run lint -w @co-pen/web`, `npm run build`.
@@ -61,7 +61,7 @@ npm run dev   # sync :1234, agent :1235, web :3000
 
 ### 알려진 한계·미확인
 
-- 실제 OpenAI 호출 경로는 타입체크만 통과(키 없음). Supabase 저장 경로 미검증. Docker 이미지는 데몬이 꺼져 있어 빌드 못 함(동일 단계를 임시 폴더에서 재현해 기동까지만 확인).
+- OpenAI 본가 호출 경로는 타입체크만 통과(키 없음). Supabase 저장 경로 미검증. Docker 이미지는 데몬이 꺼져 있어 빌드 못 함(동일 단계를 임시 폴더에서 재현해 기동까지만 확인).
 - 마지막 사람이 나가면 워커 세션이 종료되어 AI undo 기록이 사라진다. 워커는 단일 인스턴스 전제.
 - `@AI …` 멘션 문단은 문서에 그대로 남는다.
 - AI 되돌리기 직후 사용자 입력이 기존 문단 끝에 붙은 현상을 한 번 관찰했으나 자동화 조작 탓인지 미확인.

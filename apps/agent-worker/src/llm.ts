@@ -49,6 +49,10 @@ function documentData(blocks: BlockSummary[]): string {
   return `<document>\n${outline}\n</document>`;
 }
 
+/** 제공자가 과부하일 때 작업 큐가 오래 막히지 않게 한다 */
+const PLAN_TIMEOUT_MS = 10_000;
+const DRAFT_TIMEOUT_MS = 60_000;
+
 const planSchema = z.object({
   targetIndex: z.number().int(),
   action: z.enum(PLAN_ACTIONS),
@@ -74,6 +78,8 @@ export async function planEdit(input: {
   try {
     const { text } = await generateText({
       model,
+      maxRetries: 1,
+      abortSignal: AbortSignal.timeout(PLAN_TIMEOUT_MS),
       instructions: systemMessage(
         '너는 협업 문서 편집 에이전트다. 요청자 지시를 보고 새 내용을 어느 블록 뒤에 쓸지 고른다. ' +
           `targetIndex는 반드시 다음 중 하나다: ${[...allowed].join(', ')}. ` +
@@ -103,8 +109,14 @@ export function streamDraft(input: {
 }): AsyncIterable<string> {
   if (!model) return mockStream(input.prompt);
 
+  // streamText는 오류를 스트림 밖으로 던지지 않으므로 받아 두었다가 직접 던진다
+  let failure: unknown;
   const result = streamText({
     model,
+    abortSignal: AbortSignal.timeout(DRAFT_TIMEOUT_MS),
+    onError: ({ error }) => {
+      failure = error;
+    },
     instructions: systemMessage(
       '너는 팀 문서를 함께 쓰는 공동 작성자다. 본문만 한국어 평문으로 작성한다. ' +
         '마크다운 기호, 링크, 이미지, HTML 없이 문단은 빈 줄로 구분한다. ' +
@@ -114,7 +126,10 @@ export function streamDraft(input: {
     ),
     prompt: documentData(input.blocks),
   });
-  return result.textStream;
+  return (async function* () {
+    yield* result.textStream;
+    if (failure) throw failure;
+  })();
 }
 
 async function* mockStream(instruction: string): AsyncIterable<string> {
