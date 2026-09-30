@@ -47,6 +47,7 @@ npm run dev
 http://localhost:3000 → **새 문서 만들기** → 닉네임 입력. 링크를 다른 브라우저에 열면 동시 편집이 된다.
 
 - `OPENAI_API_KEY`를 비워 두면 워커가 **목업 스트림**으로 답한다. 키 없이 전체 흐름을 개발·시연할 수 있다.
+- Qwen 같은 OpenAI 호환 모델은 `apps/agent-worker/.env`에 `OPENAI_BASE_URL`(예: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`), `OPENAI_API_KEY`, `OPENAI_MODEL`(예: `qwen-plus`)을 넣으면 된다.
 - Supabase 설정을 비워 두면 `apps/sync-server/.data/`에 파일로 저장한다.
 - 서비스별로 따로 띄우려면 `npm run dev:sync`, `npm run dev:agent`, `npm run dev:web`.
 

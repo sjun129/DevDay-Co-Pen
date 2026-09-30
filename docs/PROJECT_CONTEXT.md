@@ -38,6 +38,7 @@ npm run dev   # sync :1234, agent :1235, web :3000
 ```
 
 - `OPENAI_API_KEY`가 비어 있으면 워커가 **목업 스트림**으로 답한다.
+- 모델은 Qwen을 쓰기로 했다(2026-09-30). `OPENAI_BASE_URL`에 OpenAI 호환 주소를 넣으면 워커가 Chat Completions로 호출한다. 실제 Qwen 키로는 미검증(가짜 호환 서버로 호출 경로만 확인).
 - Supabase 값이 비어 있으면 `apps/sync-server/.data/`에 파일로 저장한다.
 - Claude 데스크톱 브라우저 미리보기용 설정: `.claude/launch.json` (`sync`, `agent`, `web`).
 - 검증 명령: `npm run typecheck`, `npm run lint -w @co-pen/web`, `npm run build`.
