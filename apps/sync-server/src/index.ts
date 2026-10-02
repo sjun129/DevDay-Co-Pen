@@ -4,18 +4,22 @@ import {
   extractMentionPrompt,
   parseStatelessMessage,
   type AgentStatelessMessage,
-  type ParticipantKind,
 } from '@co-pen/shared';
 import { dispatchJob, dispatchJoin, dispatchLeave, dispatchUndo } from './agent-dispatch';
+import { createActorStore } from './actors';
+import { authenticateConnection, type ConnectionContext } from './authentication';
 import { env } from './env';
+import { createIdentityRequestHandler } from './identity-http';
 import { createPersistence } from './persistence';
-
-interface ConnectionContext {
-  kind: ParticipantKind;
-}
 
 /** 방별 사람 접속 수. 첫 사람이 들어오면 에이전트를 부르고, 마지막 사람이 나가면 내보낸다. */
 const humansInRoom = new Map<string, number>();
+const actorStore = createActorStore(env);
+const handleIdentityRequest = createIdentityRequestHandler(actorStore, env.guestTokenSecret);
+
+console.info(
+  `[startup] environment=${env.appEnvironment} persistence=${env.persistenceBackend} database=${env.persistenceBackend === 'supabase' ? 'configured' : 'local-file'}`,
+);
 
 function logDispatchError(error: unknown) {
   console.error('[agent-dispatch]', error);
@@ -26,11 +30,17 @@ const server = new Server<ConnectionContext>({
   port: env.port,
   debounce: 2000,
   maxDebounce: 10000,
-  extensions: [createPersistence()],
+  extensions: [createPersistence(env)],
 
-  // F3: 로그인 없이 링크로 입장. 토큰은 사람/에이전트 구분에만 쓴다.
+  async onRequest({ request, response }) {
+    if (await handleIdentityRequest(request, response)) {
+      // Hocuspocus treats an empty rejection as "handled" and skips its default HTTP response.
+      throw null;
+    }
+  },
+
   async onAuthenticate({ token }) {
-    return { kind: token === env.agentSharedSecret ? 'agent' : 'human' } satisfies ConnectionContext;
+    return authenticateConnection(token, env);
   },
 
   async connected({ context, documentName }) {

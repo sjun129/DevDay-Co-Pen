@@ -14,14 +14,25 @@ export interface RoomSession {
   destroy(): void;
 }
 
-export function createRoomSession(docId: string, user: AwarenessUser): RoomSession {
+interface RoomSessionOptions {
+  token: string;
+  onAuthenticated?: () => void;
+  onAuthenticationFailed?: () => void;
+}
+
+export function createRoomSession(
+  docId: string,
+  user: AwarenessUser,
+  options: RoomSessionOptions,
+): RoomSession {
   const doc = new Y.Doc();
   const provider = new HocuspocusProvider({
     url: SYNC_SERVER_URL,
     name: docId,
     document: doc,
-    // 로그인 없음(F3). 서버는 토큰으로 사람/에이전트만 구분한다.
-    token: 'guest',
+    token: options.token,
+    onAuthenticated: () => options.onAuthenticated?.(),
+    onAuthenticationFailed: () => options.onAuthenticationFailed?.(),
   });
 
   return {

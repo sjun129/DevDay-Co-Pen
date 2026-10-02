@@ -1,27 +1,89 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, Check, FileText, Link2 } from 'lucide-react';
 import { WebSocketStatus } from '@hocuspocus/provider';
 import { createRoomSession, type RoomSession } from '@/lib/collab/room-session';
 import { useConnectionStatus } from '@/lib/collab/use-connection-status';
-import { humanUser, initialOf, saveNickname, useStoredNickname } from '@/lib/identity';
+import {
+  getOrCreateGuestToken,
+  humanUser,
+  initialOf,
+  saveNickname,
+  useStoredNickname,
+} from '@/lib/identity';
 import { CollaborativeEditor } from '@/components/editor/collaborative-editor';
 import { Logo } from '@/components/ui/logo';
 import { ParticipantList } from './participant-list';
 
 export function Room({ docId }: { docId: string }) {
   const [session, setSession] = useState<RoomSession | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const sessionRef = useRef<RoomSession | null>(null);
+  const mountedRef = useRef(true);
+  const authRefreshAttemptedRef = useRef(false);
 
-  useEffect(() => () => session?.destroy(), [session]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      sessionRef.current?.destroy();
+    };
+  }, []);
+
+  function installSession(nickname: string, token: string) {
+    const nextSession = createRoomSession(docId, humanUser(nickname), {
+      token,
+      onAuthenticated: () => {
+        authRefreshAttemptedRef.current = false;
+      },
+      onAuthenticationFailed: () => void recoverAuthentication(nickname, nextSession),
+    });
+
+    if (!mountedRef.current) {
+      nextSession.destroy();
+      return;
+    }
+    sessionRef.current?.destroy();
+    sessionRef.current = nextSession;
+    setSession(nextSession);
+  }
+
+  async function recoverAuthentication(nickname: string, failedSession: RoomSession) {
+    if (!mountedRef.current || sessionRef.current !== failedSession) return;
+    failedSession.destroy();
+    sessionRef.current = null;
+
+    if (authRefreshAttemptedRef.current) {
+      setSession(null);
+      setJoinError('인증에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+
+    authRefreshAttemptedRef.current = true;
+    try {
+      const token = await getOrCreateGuestToken(true);
+      installSession(nickname, token);
+    } catch {
+      if (!mountedRef.current) return;
+      setSession(null);
+      setJoinError('게스트 인증을 만들 수 없습니다. 서버 연결을 확인해 주세요.');
+    }
+  }
+
+  async function join(nickname: string) {
+    setJoinError(null);
+    authRefreshAttemptedRef.current = false;
+    try {
+      installSession(nickname, await getOrCreateGuestToken());
+    } catch {
+      if (!mountedRef.current) return;
+      setJoinError('게스트 인증을 만들 수 없습니다. 서버 연결을 확인해 주세요.');
+    }
+  }
 
   if (!session) {
-    return (
-      <JoinCard
-        docId={docId}
-        onJoin={(nickname) => setSession(createRoomSession(docId, humanUser(nickname)))}
-      />
-    );
+    return <JoinCard docId={docId} error={joinError} onJoin={join} />;
   }
 
   return (
@@ -48,18 +110,32 @@ export function Room({ docId }: { docId: string }) {
   );
 }
 
-function JoinCard({ docId, onJoin }: { docId: string; onJoin: (nickname: string) => void }) {
+function JoinCard({
+  docId,
+  error,
+  onJoin,
+}: {
+  docId: string;
+  error: string | null;
+  onJoin: (nickname: string) => Promise<void>;
+}) {
   const storedNickname = useStoredNickname();
   const [draft, setDraft] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
   const nickname = draft ?? storedNickname;
   const preview = nickname.trim() ? humanUser(nickname.trim()) : null;
 
-  function join(event: FormEvent<HTMLFormElement>) {
+  async function join(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = nickname.trim();
     if (!name) return;
     saveNickname(name);
-    onJoin(name);
+    setJoining(true);
+    try {
+      await onJoin(name);
+    } finally {
+      setJoining(false);
+    }
   }
 
   return (
@@ -104,12 +180,14 @@ function JoinCard({ docId, onJoin }: { docId: string; onJoin: (nickname: string)
             />
           </div>
 
+          {error ? <p className="mt-3 text-sm text-rose-600">{error}</p> : null}
+
           <button
             type="submit"
-            disabled={!preview}
+            disabled={!preview || joining}
             className="bg-brand-gradient group mt-6 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3.5 font-semibold text-white shadow-lg shadow-brand-500/25 transition hover:shadow-xl hover:shadow-brand-500/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
           >
-            입장하기
+            {joining ? '연결 준비 중…' : '입장하기'}
             <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
           </button>
         </form>
