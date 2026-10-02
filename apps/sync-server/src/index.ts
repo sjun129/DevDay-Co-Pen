@@ -4,18 +4,26 @@ import {
   extractMentionPrompt,
   parseStatelessMessage,
   type AgentStatelessMessage,
-  type ParticipantKind,
 } from '@co-pen/shared';
 import { dispatchJob, dispatchJoin, dispatchLeave, dispatchUndo } from './agent-dispatch';
+import { createActorStore } from './actors';
+import { authenticateDocumentConnection } from './document-access';
+import { createDocumentRequestHandler } from './document-http';
+import type { ConnectionContext } from './authentication';
 import { env } from './env';
-import { createPersistence } from './persistence';
-
-interface ConnectionContext {
-  kind: ParticipantKind;
-}
+import { createIdentityRequestHandler } from './identity-http';
+import { createDocumentStore, createPersistence } from './persistence';
 
 /** 방별 사람 접속 수. 첫 사람이 들어오면 에이전트를 부르고, 마지막 사람이 나가면 내보낸다. */
 const humansInRoom = new Map<string, number>();
+const actorStore = createActorStore(env);
+const documentStore = createDocumentStore(env);
+const handleIdentityRequest = createIdentityRequestHandler(actorStore, env.guestTokenSecret);
+const handleDocumentRequest = createDocumentRequestHandler(documentStore, env.guestTokenSecret);
+
+console.info(
+  `[startup] environment=${env.appEnvironment} persistence=${env.persistenceBackend} database=${env.persistenceBackend === 'supabase' ? 'configured' : 'local-file'}`,
+);
 
 function logDispatchError(error: unknown) {
   console.error('[agent-dispatch]', error);
@@ -26,11 +34,20 @@ const server = new Server<ConnectionContext>({
   port: env.port,
   debounce: 2000,
   maxDebounce: 10000,
-  extensions: [createPersistence()],
+  extensions: [createPersistence(documentStore)],
 
-  // F3: 로그인 없이 링크로 입장. 토큰은 사람/에이전트 구분에만 쓴다.
-  async onAuthenticate({ token }) {
-    return { kind: token === env.agentSharedSecret ? 'agent' : 'human' } satisfies ConnectionContext;
+  async onRequest({ request, response }) {
+    if (
+      (await handleIdentityRequest(request, response)) ||
+      (await handleDocumentRequest(request, response))
+    ) {
+      // Hocuspocus treats an empty rejection as "handled" and skips its default HTTP response.
+      throw null;
+    }
+  },
+
+  async onAuthenticate({ token, documentName }) {
+    return authenticateDocumentConnection(token, documentName, env, documentStore);
   },
 
   async connected({ context, documentName }) {

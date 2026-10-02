@@ -1,9 +1,10 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import type { FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { ArrowRight, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { Logo } from '@/components/ui/logo';
+import { createSingleFlightDocumentCreator } from '@/lib/documents';
 
 const FEATURES = [
   {
@@ -23,12 +24,26 @@ const FEATURES = [
   },
 ];
 
-function newDocId() {
-  return crypto.randomUUID().slice(0, 8);
-}
-
 export default function Home() {
   const router = useRouter();
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const createDocument = useMemo(
+    () => createSingleFlightDocumentCreator((path) => router.push(path)),
+    [router],
+  );
+
+  async function createNewDocument() {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await createDocument();
+    } catch {
+      setCreateError('문서를 만들 수 없습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setCreating(false);
+    }
+  }
 
   function openByCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -45,10 +60,11 @@ export default function Home() {
         <Logo />
         <button
           type="button"
-          onClick={() => router.push(`/d/${newDocId()}`)}
+          onClick={() => void createNewDocument()}
+          disabled={creating}
           className="rounded-full border border-slate-200 bg-white/70 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-300 hover:bg-white"
         >
-          새 문서
+          {creating ? '생성 중…' : '새 문서'}
         </button>
       </header>
 
@@ -71,10 +87,11 @@ export default function Home() {
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
               <button
                 type="button"
-                onClick={() => router.push(`/d/${newDocId()}`)}
+                onClick={() => void createNewDocument()}
+                disabled={creating}
                 className="bg-brand-gradient group inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 font-semibold text-white shadow-lg shadow-brand-500/30 transition hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand-500/35"
               >
-                새 문서 만들기
+                {creating ? '문서 생성 중…' : '새 문서 만들기'}
                 <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
               </button>
               <form
@@ -96,6 +113,11 @@ export default function Home() {
                 </button>
               </form>
             </div>
+            {createError ? (
+              <p className="mt-3 text-sm text-rose-600" role="alert">
+                {createError}
+              </p>
+            ) : null}
           </div>
 
           <EditorPreview />
