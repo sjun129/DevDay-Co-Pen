@@ -17,7 +17,7 @@ export interface RoomSession {
 interface RoomSessionOptions {
   token: string;
   onAuthenticated?: () => void;
-  onAuthenticationFailed?: () => void;
+  onAuthenticationFailed?: (reason: string) => void;
 }
 
 export function createRoomSession(
@@ -32,7 +32,7 @@ export function createRoomSession(
     document: doc,
     token: options.token,
     onAuthenticated: () => options.onAuthenticated?.(),
-    onAuthenticationFailed: () => options.onAuthenticationFailed?.(),
+    onAuthenticationFailed: ({ reason }) => options.onAuthenticationFailed?.(reason),
   });
 
   return {

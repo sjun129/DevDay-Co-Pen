@@ -37,7 +37,8 @@ export function Room({ docId }: { docId: string }) {
       onAuthenticated: () => {
         authRefreshAttemptedRef.current = false;
       },
-      onAuthenticationFailed: () => void recoverAuthentication(nickname, nextSession),
+      onAuthenticationFailed: (reason) =>
+        void recoverAuthentication(nickname, nextSession, reason),
     });
 
     if (!mountedRef.current) {
@@ -49,10 +50,20 @@ export function Room({ docId }: { docId: string }) {
     setSession(nextSession);
   }
 
-  async function recoverAuthentication(nickname: string, failedSession: RoomSession) {
+  async function recoverAuthentication(
+    nickname: string,
+    failedSession: RoomSession,
+    reason: string,
+  ) {
     if (!mountedRef.current || sessionRef.current !== failedSession) return;
     failedSession.destroy();
     sessionRef.current = null;
+
+    if (reason === 'document_not_found') {
+      setSession(null);
+      setJoinError('문서를 찾을 수 없습니다. 문서 링크를 확인해 주세요.');
+      return;
+    }
 
     if (authRefreshAttemptedRef.current) {
       setSession(null);

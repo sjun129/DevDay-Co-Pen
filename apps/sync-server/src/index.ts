@@ -7,15 +7,19 @@ import {
 } from '@co-pen/shared';
 import { dispatchJob, dispatchJoin, dispatchLeave, dispatchUndo } from './agent-dispatch';
 import { createActorStore } from './actors';
-import { authenticateConnection, type ConnectionContext } from './authentication';
+import { authenticateDocumentConnection } from './document-access';
+import { createDocumentRequestHandler } from './document-http';
+import type { ConnectionContext } from './authentication';
 import { env } from './env';
 import { createIdentityRequestHandler } from './identity-http';
-import { createPersistence } from './persistence';
+import { createDocumentStore, createPersistence } from './persistence';
 
 /** 방별 사람 접속 수. 첫 사람이 들어오면 에이전트를 부르고, 마지막 사람이 나가면 내보낸다. */
 const humansInRoom = new Map<string, number>();
 const actorStore = createActorStore(env);
+const documentStore = createDocumentStore(env);
 const handleIdentityRequest = createIdentityRequestHandler(actorStore, env.guestTokenSecret);
+const handleDocumentRequest = createDocumentRequestHandler(documentStore, env.guestTokenSecret);
 
 console.info(
   `[startup] environment=${env.appEnvironment} persistence=${env.persistenceBackend} database=${env.persistenceBackend === 'supabase' ? 'configured' : 'local-file'}`,
@@ -30,17 +34,20 @@ const server = new Server<ConnectionContext>({
   port: env.port,
   debounce: 2000,
   maxDebounce: 10000,
-  extensions: [createPersistence(env)],
+  extensions: [createPersistence(documentStore)],
 
   async onRequest({ request, response }) {
-    if (await handleIdentityRequest(request, response)) {
+    if (
+      (await handleIdentityRequest(request, response)) ||
+      (await handleDocumentRequest(request, response))
+    ) {
       // Hocuspocus treats an empty rejection as "handled" and skips its default HTTP response.
       throw null;
     }
   },
 
-  async onAuthenticate({ token }) {
-    return authenticateConnection(token, env);
+  async onAuthenticate({ token, documentName }) {
+    return authenticateDocumentConnection(token, documentName, env, documentStore);
   },
 
   async connected({ context, documentName }) {

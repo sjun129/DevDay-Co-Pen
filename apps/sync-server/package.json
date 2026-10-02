@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "test": "tsx --test src/config.test.ts src/guest-token.test.ts src/authentication.test.ts src/identity-http.test.ts",
+    "test": "tsx --test src/config.test.ts src/guest-token.test.ts src/authentication.test.ts src/identity-http.test.ts src/document-http.test.ts src/document-access.test.ts src/persistence.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
