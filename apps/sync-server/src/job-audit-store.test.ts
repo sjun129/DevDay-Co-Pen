@@ -37,6 +37,7 @@ function environment(backend: 'supabase' | 'file' = 'supabase'): SyncServerEnvir
     persistenceBackend: backend,
     port: 1234,
     agentWorkerUrl: 'http://localhost:1235',
+    jobStaleAfterMs: 900_000,
     agentSharedSecret: 'agent-secret',
     guestTokenSecret: 'guest-token-secret-that-is-at-least-32-bytes',
     supabaseUrl: backend === 'supabase' ? 'https://example.supabase.co' : undefined,
@@ -91,6 +92,18 @@ test('create, get, transition, and append wrappers map the database contract', a
       assert.equal(jobId, JOB_ID);
       return { data: JOB_ROW, error: null };
     },
+    async getAuditEvent() {
+      return { data: null, error: null };
+    },
+    async listQueuedJobs() {
+      return { data: [JOB_ROW], error: null };
+    },
+    async listStaleActiveJobs() {
+      return { data: [], error: null };
+    },
+    async listDocumentJobs() {
+      return { data: [JOB_ROW], error: null };
+    },
   };
   const store = createJobAuditStore(environment(), source);
 
@@ -140,6 +153,18 @@ test('database errors retain only the SQLSTATE for programmatic handling', async
       return { data: null, error: { code: '23503', message: 'sensitive details' } };
     },
     async getAgentJob() {
+      return { data: null, error: null };
+    },
+    async getAuditEvent() {
+      return { data: null, error: null };
+    },
+    async listQueuedJobs() {
+      return { data: null, error: null };
+    },
+    async listStaleActiveJobs() {
+      return { data: null, error: null };
+    },
+    async listDocumentJobs() {
       return { data: null, error: null };
     },
   };

@@ -34,6 +34,9 @@ test('POST /identity/guest inserts an actor before returning a valid credential'
       insertedActors.push(ACTOR_ID);
       return ACTOR_ID;
     },
+    async anonymousActorExists() {
+      return true;
+    },
   };
 
   await withIdentityServer(actorStore, async (origin) => {
@@ -60,6 +63,9 @@ test('actor insert failure prevents token issuance', async () => {
   let tokenIssuerCalled = false;
   const actorStore: ActorStore = {
     async createAnonymousActor() {
+      throw new Error('database_unavailable');
+    },
+    async anonymousActorExists() {
       throw new Error('database_unavailable');
     },
   };

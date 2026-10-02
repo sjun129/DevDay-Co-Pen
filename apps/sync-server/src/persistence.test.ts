@@ -15,6 +15,7 @@ function fileEnvironment(localDataDir: string): SyncServerEnvironment {
     persistenceBackend: 'file',
     port: 1234,
     agentWorkerUrl: 'http://localhost:1235',
+    jobStaleAfterMs: 900_000,
     agentSharedSecret: 'agent-secret',
     guestTokenSecret: 'guest-token-secret-that-is-at-least-32-bytes',
     localDataDir,

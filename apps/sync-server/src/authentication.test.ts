@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SignJWT } from 'jose';
-import { DEFAULT_AGENT_ACTOR_ID } from './actors';
-import { authenticateConnection } from './authentication';
+import { DEFAULT_AGENT_ACTOR_ID, type ActorStore } from './actors';
+import { authenticateConnection, GuestAuthenticationError } from './authentication';
 import {
   GUEST_TOKEN_AUDIENCE,
   GUEST_TOKEN_ISSUER,
@@ -14,6 +14,22 @@ const AGENT_SECRET = 'agent-shared-secret';
 const GUEST_SECRET = 'guest-token-secret-that-is-at-least-32-bytes';
 const OTHER_SECRET = 'other-guest-secret-that-is-at-least-32-bytes';
 const config = { agentSharedSecret: AGENT_SECRET, guestTokenSecret: GUEST_SECRET };
+
+function actorStore(exists = true, failLookup = false) {
+  let lookupCalls = 0;
+  const store: ActorStore = {
+    async createAnonymousActor() {
+      return ACTOR_ID;
+    },
+    async anonymousActorExists(actorId) {
+      lookupCalls += 1;
+      assert.equal(actorId, ACTOR_ID);
+      if (failLookup) throw new Error('database_unavailable');
+      return exists;
+    },
+  };
+  return { store, lookupCalls: () => lookupCalls };
+}
 
 async function customToken(
   claims: { issuer?: string; audience?: string; version?: number; expiresAt?: number } = {},
@@ -31,19 +47,42 @@ async function customToken(
 
 test('valid guest token authenticates an anonymous human actor', async () => {
   const { token } = await issueGuestToken(ACTOR_ID, GUEST_SECRET);
-  assert.deepEqual(await authenticateConnection(token, config), {
+  const actors = actorStore();
+  assert.deepEqual(await authenticateConnection(token, config, actors.store), {
     kind: 'human',
     actorId: ACTOR_ID,
     credentialVersion: 1,
   });
+  assert.equal(actors.lookupCalls(), 1);
 });
 
 test('valid agent secret authenticates the deterministic agent actor', async () => {
-  assert.deepEqual(await authenticateConnection(AGENT_SECRET, config), {
+  const actors = actorStore(false, true);
+  assert.deepEqual(await authenticateConnection(AGENT_SECRET, config, actors.store), {
     kind: 'agent',
     actorId: DEFAULT_AGENT_ACTOR_ID,
     credentialVersion: 1,
   });
+  assert.equal(actors.lookupCalls(), 0);
+});
+
+test('valid signed token with a missing actor is rejected as a stale guest identity', async () => {
+  const { token } = await issueGuestToken(ACTOR_ID, GUEST_SECRET);
+  await assert.rejects(
+    () => authenticateConnection(token, config, actorStore(false).store),
+    (error: unknown) =>
+      error instanceof GuestAuthenticationError && error.code === 'invalid_guest_token',
+  );
+});
+
+test('actor lookup outage is not misclassified as a missing actor', async () => {
+  const { token } = await issueGuestToken(ACTOR_ID, GUEST_SECRET);
+  await assert.rejects(
+    () => authenticateConnection(token, config, actorStore(true, true).store),
+    (error: unknown) =>
+      error instanceof GuestAuthenticationError &&
+      error.code === 'identity_validation_unavailable',
+  );
 });
 
 test('invalid guest credentials are rejected', async (context) => {
@@ -61,7 +100,10 @@ test('invalid guest credentials are rejected', async (context) => {
 
   for (const [name, token] of cases) {
     await context.test(name, async () => {
-      await assert.rejects(() => authenticateConnection(token, config), /invalid_guest_token/);
+      await assert.rejects(
+        () => authenticateConnection(token, config, actorStore().store),
+        /invalid_guest_token/,
+      );
     });
   }
 });

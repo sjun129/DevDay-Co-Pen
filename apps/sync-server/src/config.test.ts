@@ -17,6 +17,18 @@ test('development + file succeeds', () => {
   const config = parseSyncServerEnvironment(environment());
   assert.equal(config.appEnvironment, 'development');
   assert.equal(config.persistenceBackend, 'file');
+  assert.equal(config.jobStaleAfterMs, 900_000);
+});
+
+test('job stale threshold is one validated positive millisecond setting', () => {
+  assert.equal(
+    parseSyncServerEnvironment(environment({ JOB_STALE_AFTER_MS: '60000' })).jobStaleAfterMs,
+    60_000,
+  );
+  assert.throws(
+    () => parseSyncServerEnvironment(environment({ JOB_STALE_AFTER_MS: '999' })),
+    /JOB_STALE_AFTER_MS/,
+  );
 });
 
 test('development + supabase + URL/key succeeds', () => {

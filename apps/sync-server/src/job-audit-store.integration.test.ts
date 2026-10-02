@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import * as Y from 'yjs';
 import type { SyncServerEnvironment } from './config';
 import {
   createJobAuditStore,
@@ -11,7 +12,12 @@ import {
   type CreateAgentJobInput,
   type JobAuditStore,
 } from './job-audit-store';
-import { DEFAULT_AGENT_ACTOR_ID } from './actors';
+import { createActorStore, DEFAULT_AGENT_ACTOR_ID } from './actors';
+import { authenticateConnection, GuestAuthenticationError } from './authentication';
+import { issueGuestToken } from './guest-token';
+import { createGuestIdentity } from './identity-http';
+import { DurableJobRuntime } from './job-runtime';
+import { createDocumentStore } from './persistence';
 
 const enabled = process.env.RUN_DB_INTEGRATION_TESTS === '1';
 const SHA_A = 'a'.repeat(64);
@@ -34,6 +40,7 @@ function localEnvironment(): SyncServerEnvironment {
     persistenceBackend: 'supabase',
     port: 1234,
     agentWorkerUrl: 'http://localhost:1235',
+    jobStaleAfterMs: 900_000,
     agentSharedSecret: 'local-integration-agent-secret',
     guestTokenSecret: 'local-integration-guest-secret-at-least-32-bytes',
     supabaseUrl: required('LOCAL_SUPABASE_URL'),
@@ -499,5 +506,133 @@ test('Local Supabase job/audit foundation', { skip: !enabled }, async (context) 
       nextStatus: 'planning',
     });
     assert.equal(transitioned.status, 'planning');
+  });
+
+  await context.test('durable runtime uses the RPC boundary for acceptance and lifecycle', async () => {
+    const fixtureValue = await fixture(client);
+    const dispatched: string[] = [];
+    const broadcastStatuses: string[] = [];
+    const runtime = new DurableJobRuntime({
+      store,
+      documentStore: createDocumentStore(localEnvironment()),
+      dispatchJob: async (job) => void dispatched.push(job.jobId),
+      broadcast: (_documentName, message) => void broadcastStatuses.push(message.status),
+    });
+    const doc = new Y.Doc();
+    const stateVector = Buffer.from(Y.encodeStateVector(doc)).toString('base64');
+    doc.destroy();
+    const idempotencyKey = randomUUID();
+    const request = {
+      documentName: fixtureValue.documentName,
+      actorId: fixtureValue.requesterId,
+      actorNameSnapshot: 'Integration Requester',
+      idempotencyKey,
+      mentionText: '@AI 통합 테스트 결론을 작성해줘',
+      stateVector,
+    };
+    const accepted = await runtime.acceptMention(request);
+    const repeated = await runtime.acceptMention(request);
+    assert.equal(accepted.created, true);
+    assert.equal(repeated.created, false);
+    assert.equal(repeated.job.jobId, accepted.job.jobId);
+    assert.deepEqual(dispatched, [accepted.job.jobId]);
+    assert.ok((await store.listQueuedJobs()).some((job) => job.jobId === accepted.job.jobId));
+    assert.equal(
+      (await store.getAuditEvent(
+        fixtureValue.documentName,
+        `job:${accepted.job.jobId}:requested`,
+      ))?.jobId,
+      accepted.job.jobId,
+    );
+
+    const planning = await runtime.transitionFromWorker({
+      jobId: accepted.job.jobId,
+      documentName: fixtureValue.documentName,
+      expectedStatus: 'queued',
+      nextStatus: 'planning',
+    });
+    assert.equal(planning.transitioned, true);
+    assert.ok(
+      (await store.listStaleActiveJobs('2100-01-01T00:00:00.000Z')).some(
+        (job) => job.jobId === accepted.job.jobId,
+      ),
+    );
+    const duplicateClaim = await runtime.transitionFromWorker({
+      jobId: accepted.job.jobId,
+      documentName: fixtureValue.documentName,
+      expectedStatus: 'queued',
+      nextStatus: 'planning',
+    });
+    assert.equal(duplicateClaim.transitioned, false);
+    await runtime.transitionFromWorker({
+      jobId: accepted.job.jobId,
+      documentName: fixtureValue.documentName,
+      expectedStatus: 'planning',
+      nextStatus: 'writing',
+    });
+    await runtime.transitionFromWorker({
+      jobId: accepted.job.jobId,
+      documentName: fixtureValue.documentName,
+      expectedStatus: 'writing',
+      nextStatus: 'done',
+    });
+    assert.deepEqual(broadcastStatuses, ['queued', 'planning', 'writing', 'done']);
+
+    const documentJobs = await store.listDocumentJobs(fixtureValue.documentName);
+    assert.equal(documentJobs[0]?.status, 'done');
+    const { data: events, error } = await client
+      .from('audit_events')
+      .select('event_type, metadata')
+      .eq('job_id', accepted.job.jobId)
+      .order('document_sequence');
+    assert.equal(error, null);
+    assert.deepEqual(events?.map((event) => event.event_type), [
+      'ai_job_requested',
+      'ai_job_started',
+    ]);
+    assert.equal(JSON.stringify(events).includes('통합 테스트 결론'), false);
+  });
+
+  await context.test('stale guest identity is reissued before durable job creation', async () => {
+    const environment = localEnvironment();
+    const actors = createActorStore(environment);
+    const staleActorId = randomUUID();
+    const staleToken = (await issueGuestToken(staleActorId, environment.guestTokenSecret)).token;
+    await assert.rejects(
+      () => authenticateConnection(staleToken, environment, actors),
+      (error: unknown) =>
+        error instanceof GuestAuthenticationError && error.code === 'invalid_guest_token',
+    );
+
+    const credential = await createGuestIdentity(actors, environment.guestTokenSecret);
+    const contextValue = await authenticateConnection(credential.token, environment, actors);
+    assert.equal(contextValue.actorId, credential.actorId);
+
+    const documentName = randomUUID();
+    const { error: documentError } = await client
+      .from('documents')
+      .insert({ name: documentName, state: 'AAA=' });
+    assert.equal(documentError, null);
+    const dispatched: string[] = [];
+    const runtime = new DurableJobRuntime({
+      store,
+      documentStore: createDocumentStore(environment),
+      dispatchJob: async (job) => void dispatched.push(job.jobId),
+      broadcast() {},
+    });
+    const doc = new Y.Doc();
+    const stateVector = Buffer.from(Y.encodeStateVector(doc)).toString('base64');
+    doc.destroy();
+    const accepted = await runtime.acceptMention({
+      documentName,
+      actorId: contextValue.actorId,
+      actorNameSnapshot: 'Reissued Guest',
+      idempotencyKey: randomUUID(),
+      mentionText: '@AI 새 인증으로 작업을 만들어줘',
+      stateVector,
+    });
+    assert.equal(accepted.created, true);
+    assert.equal(accepted.job.requestedByActorId, credential.actorId);
+    assert.deepEqual(dispatched, [accepted.job.jobId]);
   });
 });

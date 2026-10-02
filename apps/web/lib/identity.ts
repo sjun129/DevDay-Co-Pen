@@ -13,6 +13,10 @@ interface GuestCredentialResponse {
 
 let pendingCredential: Promise<string> | null = null;
 
+export interface GuestAuthenticationRecoveryState {
+  attempted: boolean;
+}
+
 function loadGuestToken(): string {
   try {
     return localStorage.getItem(GUEST_TOKEN_KEY) ?? '';
@@ -79,6 +83,17 @@ export async function getOrCreateGuestToken(forceRefresh = false): Promise<strin
     });
   }
   return pendingCredential;
+}
+
+export async function refreshGuestTokenOnce(
+  reason: string,
+  state: GuestAuthenticationRecoveryState,
+  refresh: (forceRefresh: boolean) => Promise<string> = getOrCreateGuestToken,
+): Promise<string> {
+  if (reason !== 'invalid_guest_token') throw new Error('guest_identity_not_refreshable');
+  if (state.attempted) throw new Error('guest_identity_refresh_exhausted');
+  state.attempted = true;
+  return refresh(true);
 }
 
 export function loadNickname(): string {

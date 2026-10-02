@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { authenticateDocumentConnection } from './document-access';
-import { DEFAULT_AGENT_ACTOR_ID } from './actors';
+import { DEFAULT_AGENT_ACTOR_ID, type ActorStore } from './actors';
 import { issueGuestToken } from './guest-token';
 import type { DocumentStore } from './persistence';
 
@@ -13,6 +13,18 @@ const ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const AGENT_SECRET = 'agent-shared-secret';
 const GUEST_SECRET = 'guest-token-secret-that-is-at-least-32-bytes';
 const config = { agentSharedSecret: AGENT_SECRET, guestTokenSecret: GUEST_SECRET };
+
+function actorStore(exists = true, failLookup = false): ActorStore {
+  return {
+    async createAnonymousActor() {
+      return ACTOR_ID;
+    },
+    async anonymousActorExists() {
+      if (failLookup) throw new Error('database_unavailable');
+      return exists;
+    },
+  };
+}
 
 function accessStore(existing: string[]) {
   const documents = new Set(existing);
@@ -48,7 +60,13 @@ test('guest may join existing full UUID and legacy documents', async () => {
 
   for (const documentName of [FULL_DOCUMENT, LEGACY_DOCUMENT]) {
     assert.deepEqual(
-      await authenticateDocumentConnection(token, documentName, config, fixture.store),
+      await authenticateDocumentConnection(
+        token,
+        documentName,
+        config,
+        fixture.store,
+        actorStore(),
+      ),
       { kind: 'human', actorId: ACTOR_ID, credentialVersion: 1 },
     );
   }
@@ -61,7 +79,14 @@ test('unknown full UUID and legacy joins are rejected without creating documents
 
   for (const documentName of [UNKNOWN_FULL_DOCUMENT, UNKNOWN_LEGACY_DOCUMENT]) {
     await assert.rejects(
-      () => authenticateDocumentConnection(token, documentName, config, fixture.store),
+      () =>
+        authenticateDocumentConnection(
+          token,
+          documentName,
+          config,
+          fixture.store,
+          actorStore(),
+        ),
       (error: { reason?: string }) => error.reason === 'document_not_found',
     );
   }
@@ -74,7 +99,14 @@ test('invalid guest token is rejected before document existence is checked', asy
 
   for (const token of ['invalid-token', 'guest']) {
     await assert.rejects(
-      () => authenticateDocumentConnection(token, FULL_DOCUMENT, config, fixture.store),
+      () =>
+        authenticateDocumentConnection(
+          token,
+          FULL_DOCUMENT,
+          config,
+          fixture.store,
+          actorStore(),
+        ),
       (error: { reason?: string }) => error.reason === 'invalid_guest_token',
     );
   }
@@ -82,11 +114,51 @@ test('invalid guest token is rejected before document existence is checked', asy
   assert.equal(fixture.createCalls(), 0);
 });
 
+test('signed token for a missing actor is rejected before document existence is checked', async () => {
+  const fixture = accessStore([FULL_DOCUMENT]);
+  const { token } = await issueGuestToken(ACTOR_ID, GUEST_SECRET);
+  await assert.rejects(
+    () =>
+      authenticateDocumentConnection(
+        token,
+        FULL_DOCUMENT,
+        config,
+        fixture.store,
+        actorStore(false),
+      ),
+    (error: { reason?: string }) => error.reason === 'invalid_guest_token',
+  );
+  assert.equal(fixture.existsCalls(), 0);
+});
+
+test('actor lookup outage is a distinct bounded authentication failure', async () => {
+  const fixture = accessStore([FULL_DOCUMENT]);
+  const { token } = await issueGuestToken(ACTOR_ID, GUEST_SECRET);
+  await assert.rejects(
+    () =>
+      authenticateDocumentConnection(
+        token,
+        FULL_DOCUMENT,
+        config,
+        fixture.store,
+        actorStore(true, true),
+      ),
+    (error: { reason?: string }) => error.reason === 'identity_validation_unavailable',
+  );
+  assert.equal(fixture.existsCalls(), 0);
+});
+
 test('agent may join an existing document but cannot create an unknown document', async () => {
   const fixture = accessStore([FULL_DOCUMENT]);
 
   assert.deepEqual(
-    await authenticateDocumentConnection(AGENT_SECRET, FULL_DOCUMENT, config, fixture.store),
+    await authenticateDocumentConnection(
+      AGENT_SECRET,
+      FULL_DOCUMENT,
+      config,
+      fixture.store,
+      actorStore(false, true),
+    ),
     { kind: 'agent', actorId: DEFAULT_AGENT_ACTOR_ID, credentialVersion: 1 },
   );
   await assert.rejects(
@@ -96,6 +168,7 @@ test('agent may join an existing document but cannot create an unknown document'
         UNKNOWN_FULL_DOCUMENT,
         config,
         fixture.store,
+        actorStore(false, true),
       ),
     (error: { reason?: string }) => error.reason === 'document_not_found',
   );

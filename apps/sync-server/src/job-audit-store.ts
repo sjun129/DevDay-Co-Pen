@@ -82,6 +82,10 @@ export interface AppendAuditEventInput {
 export interface JobAuditStore {
   createAgentJob(input: CreateAgentJobInput): Promise<{ job: AgentJob; created: boolean }>;
   getAgentJob(jobId: string): Promise<AgentJob | null>;
+  getAuditEvent(documentName: string, eventKey: string): Promise<AuditEvent | null>;
+  listQueuedJobs(limit?: number): Promise<AgentJob[]>;
+  listStaleActiveJobs(staleBefore: string, limit?: number): Promise<AgentJob[]>;
+  listDocumentJobs(documentName: string, limit?: number): Promise<AgentJob[]>;
   transitionAgentJob(input: TransitionAgentJobInput): Promise<AgentJob>;
   appendAuditEvent(input: AppendAuditEventInput): Promise<AuditEvent>;
 }
@@ -94,6 +98,10 @@ interface DatabaseResult {
 export interface JobAuditDataSource {
   rpc(name: string, parameters: Record<string, unknown>): Promise<DatabaseResult>;
   getAgentJob(jobId: string): Promise<DatabaseResult>;
+  getAuditEvent(documentName: string, eventKey: string): Promise<DatabaseResult>;
+  listQueuedJobs(limit: number): Promise<DatabaseResult>;
+  listStaleActiveJobs(staleBefore: string, limit: number): Promise<DatabaseResult>;
+  listDocumentJobs(documentName: string, limit: number): Promise<DatabaseResult>;
 }
 
 export class JobAuditDatabaseError extends Error {
@@ -175,6 +183,18 @@ function mapAuditEvent(value: unknown): AuditEvent {
   };
 }
 
+function mapAgentJobs(value: unknown): AgentJob[] {
+  if (!Array.isArray(value)) throw new Error('invalid_agent_jobs_response');
+  return value.map(mapAgentJob);
+}
+
+function boundedLimit(limit = 50): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('invalid_agent_jobs_limit');
+  }
+  return limit;
+}
+
 function throwDatabaseError(error: unknown): asserts error is null | undefined {
   if (error) throw new JobAuditDatabaseError(error);
 }
@@ -192,6 +212,43 @@ function createSupabaseDataSource(url: string, serviceRoleKey: string): JobAudit
         .select('*')
         .eq('job_id', jobId)
         .maybeSingle();
+      return { data, error };
+    },
+    async getAuditEvent(documentName, eventKey) {
+      const { data, error } = await supabase
+        .from('audit_events')
+        .select('*')
+        .eq('document_name', documentName)
+        .eq('event_key', eventKey)
+        .maybeSingle();
+      return { data, error };
+    },
+    async listQueuedJobs(limit) {
+      const { data, error } = await supabase
+        .from('agent_jobs')
+        .select('*')
+        .eq('status', 'queued')
+        .order('created_at', { ascending: true })
+        .limit(limit);
+      return { data, error };
+    },
+    async listStaleActiveJobs(staleBefore, limit) {
+      const { data, error } = await supabase
+        .from('agent_jobs')
+        .select('*')
+        .in('status', ['planning', 'writing'])
+        .lt('started_at', staleBefore)
+        .order('started_at', { ascending: true })
+        .limit(limit);
+      return { data, error };
+    },
+    async listDocumentJobs(documentName, limit) {
+      const { data, error } = await supabase
+        .from('agent_jobs')
+        .select('*')
+        .eq('document_name', documentName)
+        .order('created_at', { ascending: false })
+        .limit(limit);
       return { data, error };
     },
   };
@@ -235,6 +292,37 @@ export function createJobAuditStore(
       const { data, error } = await source.getAgentJob(jobId);
       throwDatabaseError(error);
       return data === null ? null : mapAgentJob(data);
+    },
+
+    async getAuditEvent(documentName, eventKey) {
+      const { data, error } = await source.getAuditEvent(documentName, eventKey);
+      throwDatabaseError(error);
+      return data === null ? null : mapAuditEvent(data);
+    },
+
+    async listQueuedJobs(limit) {
+      const { data, error } = await source.listQueuedJobs(boundedLimit(limit));
+      throwDatabaseError(error);
+      return mapAgentJobs(data);
+    },
+
+    async listStaleActiveJobs(staleBefore, limit) {
+      if (!Number.isFinite(Date.parse(staleBefore))) throw new Error('invalid_stale_before');
+      const { data, error } = await source.listStaleActiveJobs(
+        staleBefore,
+        boundedLimit(limit),
+      );
+      throwDatabaseError(error);
+      return mapAgentJobs(data);
+    },
+
+    async listDocumentJobs(documentName, limit) {
+      const { data, error } = await source.listDocumentJobs(
+        documentName,
+        boundedLimit(limit),
+      );
+      throwDatabaseError(error);
+      return mapAgentJobs(data);
     },
 
     async transitionAgentJob(input) {

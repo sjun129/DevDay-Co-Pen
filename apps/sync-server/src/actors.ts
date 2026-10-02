@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import type { SyncServerEnvironment } from './config';
@@ -9,6 +9,7 @@ export const DEFAULT_AGENT_ACTOR_KEY = 'agent:co-pen-default';
 
 export interface ActorStore {
   createAnonymousActor(): Promise<string>;
+  anonymousActorExists(actorId: string): Promise<boolean>;
 }
 
 function supabaseActorStore(url: string, serviceRoleKey: string): ActorStore {
@@ -23,6 +24,16 @@ function supabaseActorStore(url: string, serviceRoleKey: string): ActorStore {
         .single();
       if (error || !data?.id) throw new Error('actor_insert_failed');
       return data.id as string;
+    },
+    async anonymousActorExists(actorId) {
+      const { data, error } = await supabase
+        .from('actors')
+        .select('id')
+        .eq('id', actorId)
+        .eq('kind', 'anonymous')
+        .maybeSingle();
+      if (error) throw new Error('actor_lookup_failed');
+      return data !== null;
     },
   };
 }
@@ -41,6 +52,15 @@ function fileActorStore(dataDir: string): ActorStore {
         { encoding: 'utf8', flag: 'wx' },
       );
       return id;
+    },
+    async anonymousActorExists(actorId) {
+      try {
+        await access(path.join(actorsDir, `${actorId}.json`));
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw new Error('actor_lookup_failed');
+      }
     },
   };
 }
