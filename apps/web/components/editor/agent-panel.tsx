@@ -1,6 +1,5 @@
 'use client';
 
-import type { HocuspocusProvider } from '@hocuspocus/provider';
 import type { AgentJobStatus } from '@co-pen/shared';
 import {
   Check,
@@ -15,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAgentStatus } from '@/lib/collab/use-agent-status';
+import type { RoomSession } from '@/lib/collab/room-session';
 import type { PendingSuggestion } from '@/lib/editor/ai-suggestion';
 
 const STATUS: Record<AgentJobStatus | 'idle', { label: string; icon: LucideIcon; tone: string; spin?: boolean }> = {
@@ -29,15 +29,15 @@ const STATUS: Record<AgentJobStatus | 'idle', { label: string; icon: LucideIcon;
 const EXAMPLES = ['@AI 3장 결론 써줘', '@AI 문체를 보고서체로 다듬어줘', '@AI 회의 내용 요약해줘'];
 
 interface AgentPanelProps {
-  provider: HocuspocusProvider;
+  session: RoomSession;
   suggestions: PendingSuggestion[];
   onAccept: (jobId: string) => void;
   onReject: (jobId: string) => void;
   onUndoAgent: () => void;
 }
 
-export function AgentPanel({ provider, suggestions, onAccept, onReject, onUndoAgent }: AgentPanelProps) {
-  const status = useAgentStatus(provider);
+export function AgentPanel({ session, suggestions, onAccept, onReject, onUndoAgent }: AgentPanelProps) {
+  const status = useAgentStatus(session);
   const current = STATUS[status?.status ?? 'idle'];
   const StatusIcon = current.icon;
 

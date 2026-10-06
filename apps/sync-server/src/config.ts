@@ -9,6 +9,7 @@ export interface SyncServerEnvironment {
   persistenceBackend: PersistenceBackend;
   port: number;
   agentWorkerUrl: string;
+  jobStaleAfterMs: number;
   agentSharedSecret: string;
   guestTokenSecret: string;
   supabaseUrl?: string;
@@ -17,6 +18,7 @@ export interface SyncServerEnvironment {
 }
 
 const GUEST_TOKEN_SECRET_MIN_BYTES = 32;
+const DEFAULT_JOB_STALE_AFTER_MS = 15 * 60 * 1000;
 
 function required(source: NodeJS.ProcessEnv, name: string): string {
   const value = source[name]?.trim();
@@ -49,9 +51,13 @@ export function parseSyncServerEnvironment(source: NodeJS.ProcessEnv): SyncServe
   const supabaseUrl = optional(source, 'SUPABASE_URL');
   const supabaseServiceRoleKey = optional(source, 'SUPABASE_SERVICE_ROLE_KEY');
   const port = Number(source.PORT ?? 1234);
+  const jobStaleAfterMs = Number(source.JOB_STALE_AFTER_MS ?? DEFAULT_JOB_STALE_AFTER_MS);
 
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('Environment variable PORT must be an integer between 1 and 65535');
+  }
+  if (!Number.isInteger(jobStaleAfterMs) || jobStaleAfterMs < 1_000) {
+    throw new Error('Environment variable JOB_STALE_AFTER_MS must be an integer of at least 1000');
   }
 
   if (
@@ -85,6 +91,7 @@ export function parseSyncServerEnvironment(source: NodeJS.ProcessEnv): SyncServe
     persistenceBackend,
     port,
     agentWorkerUrl: source.AGENT_WORKER_URL?.trim() || 'http://localhost:1235',
+    jobStaleAfterMs,
     agentSharedSecret,
     guestTokenSecret,
     supabaseUrl,

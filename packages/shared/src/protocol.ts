@@ -7,7 +7,8 @@
 export type ClientStatelessMessage =
   | {
       type: 'agent:mention';
-      prompt: string;
+      /** One browser intent. Retries for the same pending intent reuse this UUID. */
+      idempotencyKey: string;
       requestedBy: string;
       /** 멘션이 입력된 문단의 텍스트. 워커가 이 문단을 앵커로 찾는다. */
       mentionText: string;
@@ -25,6 +26,8 @@ export type AgentStatelessMessage = {
   type: 'agent:status';
   jobId: string;
   status: AgentJobStatus;
+  /** Present for browser-originated jobs so the in-memory pending request can be acknowledged. */
+  idempotencyKey?: string;
   message?: string;
 };
 
@@ -65,6 +68,21 @@ export interface AgentJobRequest extends AgentRoomRequest {
   requestedBy: string;
   mentionText: string;
   stateVector: string;
+}
+
+/** Agent Worker -> Sync Server. The Sync Server remains the only database principal. */
+export interface AgentJobTransitionRequest extends AgentRoomRequest {
+  jobId: string;
+  expectedStatus: 'queued' | 'planning' | 'writing';
+  nextStatus: 'planning' | 'writing' | 'done' | 'error';
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface AgentJobTransitionResponse {
+  jobId: string;
+  status: AgentJobStatus;
+  transitioned: boolean;
 }
 
 /** POST /undo */

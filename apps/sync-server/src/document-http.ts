@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as Y from 'yjs';
+import type { ActorStore } from './actors';
+import { authenticateGuestCredential, GuestAuthenticationError } from './authentication';
 import { isNewDocumentName } from './document-id';
-import { verifyGuestToken } from './guest-token';
 import type { DocumentStore } from './persistence';
 
 const MAX_REQUEST_BYTES = 16 * 1024;
@@ -55,7 +56,11 @@ export async function createDocument(
   return { documentName, created };
 }
 
-export function createDocumentRequestHandler(store: DocumentStore, guestTokenSecret: string) {
+export function createDocumentRequestHandler(
+  store: DocumentStore,
+  actorStore: ActorStore,
+  guestTokenSecret: string,
+) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
     if (pathname !== '/documents') return false;
@@ -82,8 +87,16 @@ export function createDocumentRequestHandler(store: DocumentStore, guestTokenSec
       return true;
     }
     try {
-      await verifyGuestToken(token, guestTokenSecret);
-    } catch {
+      await authenticateGuestCredential(token, guestTokenSecret, actorStore);
+    } catch (error) {
+      if (
+        error instanceof GuestAuthenticationError &&
+        error.code === 'identity_validation_unavailable'
+      ) {
+        console.error('[identity] actor validation unavailable');
+        writeJson(response, 503, { error: 'identity_validation_unavailable' });
+        return true;
+      }
       writeJson(response, 401, { error: 'invalid_guest_token' });
       return true;
     }

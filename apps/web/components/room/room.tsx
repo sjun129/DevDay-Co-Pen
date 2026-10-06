@@ -9,6 +9,7 @@ import {
   getOrCreateGuestToken,
   humanUser,
   initialOf,
+  refreshGuestTokenOnce,
   saveNickname,
   useStoredNickname,
 } from '@/lib/identity';
@@ -21,7 +22,7 @@ export function Room({ docId }: { docId: string }) {
   const [joinError, setJoinError] = useState<string | null>(null);
   const sessionRef = useRef<RoomSession | null>(null);
   const mountedRef = useRef(true);
-  const authRefreshAttemptedRef = useRef(false);
+  const authRecoveryRef = useRef({ attempted: false });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -35,7 +36,7 @@ export function Room({ docId }: { docId: string }) {
     const nextSession = createRoomSession(docId, humanUser(nickname), {
       token,
       onAuthenticated: () => {
-        authRefreshAttemptedRef.current = false;
+        authRecoveryRef.current.attempted = false;
       },
       onAuthenticationFailed: (reason) =>
         void recoverAuthentication(nickname, nextSession, reason),
@@ -65,26 +66,29 @@ export function Room({ docId }: { docId: string }) {
       return;
     }
 
-    if (authRefreshAttemptedRef.current) {
+    if (reason === 'identity_validation_unavailable' || reason === 'document_access_unavailable') {
       setSession(null);
-      setJoinError('인증에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+      setJoinError('서버에서 인증 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.');
       return;
     }
 
-    authRefreshAttemptedRef.current = true;
     try {
-      const token = await getOrCreateGuestToken(true);
+      const token = await refreshGuestTokenOnce(reason, authRecoveryRef.current);
       installSession(nickname, token);
-    } catch {
+    } catch (error) {
       if (!mountedRef.current) return;
       setSession(null);
-      setJoinError('게스트 인증을 만들 수 없습니다. 서버 연결을 확인해 주세요.');
+      setJoinError(
+        error instanceof Error && error.message === 'guest_identity_refresh_exhausted'
+          ? '인증에 실패했습니다. 잠시 후 다시 시도해 주세요.'
+          : '게스트 인증을 만들 수 없습니다. 서버 연결을 확인해 주세요.',
+      );
     }
   }
 
   async function join(nickname: string) {
     setJoinError(null);
-    authRefreshAttemptedRef.current = false;
+    authRecoveryRef.current.attempted = false;
     try {
       installSession(nickname, await getOrCreateGuestToken());
     } catch {

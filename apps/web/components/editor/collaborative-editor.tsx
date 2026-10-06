@@ -20,7 +20,7 @@ import { AgentPanel } from './agent-panel';
 import { FormatToolbar } from './format-toolbar';
 
 export function CollaborativeEditor({ session }: { session: RoomSession }) {
-  const { doc, provider, user, send, stateVector } = session;
+  const { doc, provider, user, send, sendAgentMention, stateVector } = session;
   const paged = useMediaQuery(`(min-width: ${PAGED_VIEW_MIN_WIDTH}px)`);
 
   const editor = useEditor(
@@ -58,11 +58,9 @@ export function CollaborativeEditor({ session }: { session: RoomSession }) {
         AiSuggestion,
         MentionTrigger.configure({
           // Enter로 문단이 나뉜 다음 보내야 워커가 그 새 줄까지 본 상태에서 위치를 정한다
-          onMention: ({ prompt, mentionText }) =>
+          onMention: ({ mentionText }) =>
             setTimeout(() =>
-              send({
-                type: 'agent:mention',
-                prompt,
+              sendAgentMention({
                 mentionText,
                 requestedBy: user.name,
                 stateVector: stateVector(),
@@ -107,7 +105,7 @@ export function CollaborativeEditor({ session }: { session: RoomSession }) {
           </div>
         </div>
         <AgentPanel
-          provider={provider}
+          session={session}
           suggestions={suggestions ?? []}
           onAccept={(jobId) => editor?.chain().focus().acceptAiSuggestion(jobId).run()}
           onReject={(jobId) => editor?.chain().focus().rejectAiSuggestion(jobId).run()}

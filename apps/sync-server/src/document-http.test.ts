@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import * as Y from 'yjs';
+import type { ActorStore } from './actors';
 import { isNewDocumentName } from './document-id';
 import { createDocumentRequestHandler } from './document-http';
 import { issueGuestToken } from './guest-token';
@@ -36,8 +37,24 @@ class MemoryDocumentStore implements DocumentStore {
   }
 }
 
-async function withDocumentServer<T>(store: DocumentStore, run: (origin: string) => Promise<T>) {
-  const handler = createDocumentRequestHandler(store, SECRET);
+function actorStore(exists = true, failLookup = false): ActorStore {
+  return {
+    async createAnonymousActor() {
+      return ACTOR_ID;
+    },
+    async anonymousActorExists() {
+      if (failLookup) throw new Error('database_unavailable');
+      return exists;
+    },
+  };
+}
+
+async function withDocumentServer<T>(
+  store: DocumentStore,
+  run: (origin: string) => Promise<T>,
+  actors: ActorStore = actorStore(),
+) {
+  const handler = createDocumentRequestHandler(store, actors, SECRET);
   const server = createServer(async (request, response) => {
     if (!(await handler(request, response))) response.writeHead(404).end();
   });
@@ -124,6 +141,44 @@ test('POST /documents rejects invalid guest credentials', async (context) => {
     }
     assert.equal(store.documents.size, 0);
   });
+});
+
+test('POST /documents rejects a signed token whose anonymous actor no longer exists', async () => {
+  const store = new MemoryDocumentStore();
+  const { token } = await issueGuestToken(ACTOR_ID, SECRET);
+  await withDocumentServer(
+    store,
+    async (origin) => {
+      const response = await postDocument(
+        origin,
+        token,
+        JSON.stringify({ documentName: DOCUMENT_NAME }),
+      );
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), { error: 'invalid_guest_token' });
+      assert.equal(store.documents.size, 0);
+    },
+    actorStore(false),
+  );
+});
+
+test('POST /documents reports actor lookup outage without invalidating the credential', async () => {
+  const store = new MemoryDocumentStore();
+  const { token } = await issueGuestToken(ACTOR_ID, SECRET);
+  await withDocumentServer(
+    store,
+    async (origin) => {
+      const response = await postDocument(
+        origin,
+        token,
+        JSON.stringify({ documentName: DOCUMENT_NAME }),
+      );
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: 'identity_validation_unavailable' });
+      assert.equal(store.documents.size, 0);
+    },
+    actorStore(true, true),
+  );
 });
 
 test('POST /documents rejects malformed bodies and non-UUID creation names', async () => {

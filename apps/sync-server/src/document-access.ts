@@ -1,4 +1,10 @@
-import { authenticateConnection, type AuthenticationConfig, type ConnectionContext } from './authentication';
+import type { ActorStore } from './actors';
+import {
+  authenticateConnection,
+  GuestAuthenticationError,
+  type AuthenticationConfig,
+  type ConnectionContext,
+} from './authentication';
 import type { DocumentStore } from './persistence';
 
 export class DocumentConnectionError extends Error {
@@ -15,11 +21,19 @@ export async function authenticateDocumentConnection(
   documentName: string,
   config: AuthenticationConfig,
   store: DocumentStore,
+  actorStore: ActorStore,
 ): Promise<ConnectionContext> {
   let context: ConnectionContext;
   try {
-    context = await authenticateConnection(token, config);
-  } catch {
+    context = await authenticateConnection(token, config, actorStore);
+  } catch (error) {
+    if (
+      error instanceof GuestAuthenticationError &&
+      error.code === 'identity_validation_unavailable'
+    ) {
+      console.error('[identity] actor validation unavailable');
+      throw new DocumentConnectionError('identity_validation_unavailable');
+    }
     throw new DocumentConnectionError('invalid_guest_token');
   }
 
