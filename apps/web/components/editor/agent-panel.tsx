@@ -1,6 +1,5 @@
 'use client';
 
-import type { HocuspocusProvider } from '@hocuspocus/provider';
 import {
   AGENT_IDS,
   AGENT_ROLES,
@@ -23,6 +22,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAgentStatus } from '@/lib/collab/use-agent-status';
+import type { RoomSession } from '@/lib/collab/room-session';
 import type { PendingSuggestion } from '@/lib/editor/ai-suggestion';
 
 const STATUS: Record<AgentJobStatus | 'idle', { label: string; icon: LucideIcon; tone: string; spin?: boolean }> = {
@@ -37,15 +37,15 @@ const STATUS: Record<AgentJobStatus | 'idle', { label: string; icon: LucideIcon;
 const ROLE_ICON: Record<AgentId, LucideIcon> = { draft: PenLine, proofread: SpellCheck };
 
 interface AgentPanelProps {
-  provider: HocuspocusProvider;
+  session: RoomSession;
   suggestions: PendingSuggestion[];
   onAccept: (jobId: string, force?: boolean) => void;
   onReject: (jobId: string) => void;
   onUndoAgent: (agentId: AgentId) => void;
 }
 
-export function AgentPanel({ provider, suggestions, onAccept, onReject, onUndoAgent }: AgentPanelProps) {
-  const statuses = useAgentStatus(provider);
+export function AgentPanel({ session, suggestions, onAccept, onReject, onUndoAgent }: AgentPanelProps) {
+  const statuses = useAgentStatus(session);
 
   return (
     <aside className="order-first grid w-full shrink-0 items-start gap-4 md:grid-cols-2 xl:sticky xl:top-32 xl:order-none xl:flex xl:w-80 xl:flex-col xl:items-stretch">

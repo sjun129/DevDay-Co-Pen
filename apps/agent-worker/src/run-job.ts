@@ -1,12 +1,16 @@
 import * as Y from 'yjs';
 import {
   AGENT_ORIGIN,
+  AGENT_JOB_ERRORS,
   AGENT_ROLES,
   AI_DELETION_MARK,
   AI_SUGGESTION_MARK,
   parseMention,
   textHash,
+  type AgentJobErrorCode,
   type AgentJobRequest,
+  type AgentJobTransitionRequest,
+  type AgentJobTransitionResponse,
 } from '@co-pen/shared';
 import {
   anchorAfterEachBlock,
@@ -25,11 +29,26 @@ import { env } from './env';
 import { lockBlock } from './guard/block-locks';
 import { StreamSanitizer } from './guard/output-sanitizer';
 import { rewriteTarget } from './guard/plan-guard';
+import { requestJobTransition } from './job-callback';
 import { planEdit, streamDraft, streamRewrite } from './llm';
 import type { AgentSession } from './session';
 import { StreamWriter } from './stream-writer';
 
 const SYNC_WAIT_TIMEOUT_MS = 3000;
+
+export interface RunJobDependencies {
+  transition(request: AgentJobTransitionRequest): Promise<AgentJobTransitionResponse>;
+  plan: typeof planEdit;
+  stream: typeof streamDraft;
+  rewrite: typeof streamRewrite;
+}
+
+const DEFAULT_DEPENDENCIES: RunJobDependencies = {
+  transition: requestJobTransition,
+  plan: planEdit,
+  stream: streamDraft,
+  rewrite: streamRewrite,
+};
 
 function hasSeen(doc: Y.Doc, required: Map<number, number>): boolean {
   const current = Y.decodeStateVector(Y.encodeStateVector(doc));
@@ -39,11 +58,6 @@ function hasSeen(doc: Y.Doc, required: Map<number, number>): boolean {
   return true;
 }
 
-/**
- * 작업 요청은 HTTP로, 문서 변경은 WebSocket으로 따로 오므로 요청이 먼저 도착할 수 있다.
- * 요청자가 보낸 state vector만큼 워커 문서가 따라잡을 때까지 기다린다.
- * 그렇지 않으면 멘션 직후 Enter로 생긴 빈 줄과 AI 문단이 같은 자리에 동시 삽입되어 순서가 무작위가 된다.
- */
 function waitForRequesterState(doc: Y.Doc, stateVector: string): Promise<void> {
   const required = Y.decodeStateVector(Buffer.from(stateVector, 'base64'));
   if (hasSeen(doc, required)) return Promise.resolve();
@@ -62,66 +76,128 @@ function waitForRequesterState(doc: Y.Doc, stateVector: string): Promise<void> {
   });
 }
 
-/** 요청자에게 그대로 보여 줄 수 있는 실패 사유 */
-export class JobError extends Error {}
+/** 요청자에게 보여 줄 수 있는 실패 사유. 문구는 AGENT_JOB_ERRORS 표에서만 나온다. */
+export class JobError extends Error {
+  constructor(readonly code: AgentJobErrorCode) {
+    super(code);
+  }
+}
+
+async function transition(
+  dependencies: RunJobDependencies,
+  job: AgentJobRequest,
+  expectedStatus: AgentJobTransitionRequest['expectedStatus'],
+  nextStatus: AgentJobTransitionRequest['nextStatus'],
+): Promise<boolean> {
+  const response = await dependencies.transition({
+    jobId: job.jobId,
+    documentName: job.documentName,
+    expectedStatus,
+    nextStatus,
+  });
+  return response.transitioned && response.status === nextStatus;
+}
+
+async function reportFailure(
+  dependencies: RunJobDependencies,
+  job: AgentJobRequest,
+  expectedStatus: 'planning' | 'writing',
+  errorCode: AgentJobErrorCode,
+): Promise<void> {
+  try {
+    await dependencies.transition({
+      jobId: job.jobId,
+      documentName: job.documentName,
+      expectedStatus,
+      nextStatus: 'error',
+      errorCode,
+      errorMessage: AGENT_JOB_ERRORS[errorCode],
+    });
+  } catch {
+    // The Sync Server recovery path will terminalize a stale active job.
+  }
+}
 
 interface JobContext {
   session: AgentSession;
   job: AgentJobRequest;
+  dependencies: RunJobDependencies;
   prompt: string;
   blocks: BlockSummary[];
   mentionIndex: number;
-  status: (value: 'planning' | 'writing' | 'done') => void;
+  /** 문서를 건드리기 직전에 부른다. planning -> writing CAS를 얻지 못하면 false */
+  claimWriting: () => Promise<boolean>;
 }
 
-export async function runJob(session: AgentSession, job: AgentJobRequest) {
-  const { doc, agentId } = session;
-  const status = (value: 'planning' | 'writing' | 'done') =>
-    session.sendStatus({ type: 'agent:status', agentId, jobId: job.jobId, status: value });
+export async function runJob(
+  session: AgentSession,
+  job: AgentJobRequest,
+  dependencies: RunJobDependencies = DEFAULT_DEPENDENCIES,
+) {
+  // The queued -> planning CAS is the exclusive execution claim. Duplicate dispatches stop here.
+  if (!(await transition(dependencies, job, 'queued', 'planning'))) return;
+  let ownedStatus: 'planning' | 'writing' = 'planning';
 
-  // L1: 지시와 담당 에이전트는 사람이 친 멘션 문단에서만 꺼낸다
-  const mention = parseMention(job.mentionText);
-  if (!mention || mention.agentId !== agentId) throw new JobError('멘션 형식이 아닌 요청이에요.');
+  try {
+    const { doc, agentId } = session;
+    // L1: 지시와 담당 에이전트는 사람이 친 멘션 문단에서만 꺼낸다
+    const mention = parseMention(job.mentionText);
+    if (!mention || mention.agentId !== agentId) throw new JobError('invalid_mention');
 
-  status('planning');
-  await waitForRequesterState(doc, job.stateVector);
-  const blocks = summarizeBlocks(getFragment(doc));
-  const context: JobContext = {
-    session,
-    job,
-    prompt: mention.prompt,
-    blocks,
-    mentionIndex: findMentionBlock(blocks, job.mentionText),
-    status,
-  };
+    await waitForRequesterState(doc, job.stateVector);
+    const blocks = summarizeBlocks(getFragment(doc));
+    const context: JobContext = {
+      session,
+      job,
+      dependencies,
+      prompt: mention.prompt,
+      blocks,
+      mentionIndex: findMentionBlock(blocks, job.mentionText),
+      async claimWriting() {
+        // No Yjs mutation is allowed until the durable planning -> writing CAS succeeds.
+        if (!(await transition(dependencies, job, 'planning', 'writing'))) return false;
+        ownedStatus = 'writing';
+        return true;
+      },
+    };
 
-  // 역할마다 할 수 있는 행동은 하나뿐이다 (L3)
-  if (AGENT_ROLES[agentId].action === 'rewrite') await rewriteBlock(context);
-  else await insertDraft(context);
-  status('done');
+    // 역할마다 할 수 있는 행동은 하나뿐이다 (L3)
+    const wrote =
+      AGENT_ROLES[agentId].action === 'rewrite' ? await rewriteBlock(context) : await insertDraft(context);
+    if (wrote) await transition(dependencies, job, 'writing', 'done');
+  } catch (error) {
+    await reportFailure(
+      dependencies,
+      job,
+      ownedStatus,
+      error instanceof JobError ? error.code : 'worker_execution_failed',
+    );
+    throw error;
+  }
 }
 
 /** 초안 작성자: 허용된 위치 뒤에 새 문단을 쓴다 */
-async function insertDraft({ session, job, prompt, blocks, mentionIndex, status }: JobContext) {
+async function insertDraft({ session, job, dependencies, prompt, blocks, mentionIndex, claimWriting }: JobContext) {
   const { doc } = session;
   const fragment = getFragment(doc);
   // 계획(LLM 호출) 전에 앵커를 걸어 두어야 그 사이의 사람 편집에도 위치가 유지된다
   const anchors = anchorAfterEachBlock(fragment);
   const nodes = fragment.toArray();
-  const plan = await planEdit({ prompt, blocks, mentionIndex });
+  const plan = await dependencies.plan({ prompt, blocks, mentionIndex });
 
   // 다른 에이전트가 이 문단을 고쳐 쓰는 중이면 끝날 때까지 기다린다
   const anchorBlock = nodes[plan.targetIndex];
   const release = anchorBlock ? await lockBlock(session.documentName, blockId(anchorBlock)) : () => {};
   try {
+    if (!(await claimWriting())) return false;
     session.undoManager.stopCapturing();
     let target!: Y.XmlText;
     doc.transact(() => {
       target = insertParagraph(fragment, resolveBlockIndex(doc, anchors[plan.targetIndex]));
     }, AGENT_ORIGIN);
 
-    status('writing');
-    await streamInto(session, job, target, streamDraft({ prompt, targetIndex: plan.targetIndex, blocks }));
+    await streamInto(session, job, target, dependencies.stream({ prompt, targetIndex: plan.targetIndex, blocks }));
+    return true;
   } finally {
     release();
   }
@@ -132,26 +208,25 @@ async function insertDraft({ session, job, prompt, blocks, mentionIndex, status 
  * 원문은 지우지 않고 aiDeletion 표시만 하고, 수정본을 바로 아래 새 문단에 제안으로 쓴다.
  * 원문 지문(base)을 함께 남겨 두어, 수락할 때 그 사이 사람이 원문을 고쳤는지 알 수 있다.
  */
-async function rewriteBlock({ session, job, prompt, blocks, mentionIndex, status }: JobContext) {
+async function rewriteBlock({ session, job, dependencies, prompt, blocks, mentionIndex, claimWriting }: JobContext) {
   const { doc, agentId } = session;
   const fragment = getFragment(doc);
 
   const targetIndex = rewriteTarget(blocks, mentionIndex);
   const block = fragment.toArray()[targetIndex];
-  if (!(block instanceof Y.XmlElement)) {
-    throw new JobError('고칠 문단을 찾지 못했어요. 고칠 문단 바로 아래 줄에 @교정을 써 주세요.');
-  }
+  if (!(block instanceof Y.XmlElement)) throw new JobError('rewrite_target_missing');
 
   const release = await lockBlock(session.documentName, blockId(block));
   try {
     // 기다리는 동안 문단이 지워졌거나 다른 제안이 붙었을 수 있다
     const index = fragment.toArray().indexOf(block);
     const original = blockText(block);
-    if (index < 0 || !original.trim()) throw new JobError('고칠 문단이 그 사이에 사라졌어요.');
+    if (index < 0 || !original.trim()) throw new JobError('rewrite_target_removed');
     if (hasPendingAiMark(block, [AI_SUGGESTION_MARK, AI_DELETION_MARK])) {
-      throw new JobError('아직 검토하지 않은 AI 제안이 있는 문단이에요. 먼저 수락하거나 거절해 주세요.');
+      throw new JobError('rewrite_target_pending');
     }
 
+    if (!(await claimWriting())) return false;
     session.undoManager.stopCapturing();
     let target!: Y.XmlText;
     doc.transact(() => {
@@ -161,8 +236,8 @@ async function rewriteBlock({ session, job, prompt, blocks, mentionIndex, status
       target = insertParagraph(fragment, index + 1);
     }, AGENT_ORIGIN);
 
-    status('writing');
-    await streamInto(session, job, target, streamRewrite({ prompt, original }));
+    await streamInto(session, job, target, dependencies.rewrite({ prompt, original }));
+    return true;
   } finally {
     release();
   }

@@ -101,3 +101,8 @@ export function textHash(text: string): string {
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
+
+/** 역할마다 행동이 하나뿐이라 작업의 행동으로 담당 에이전트를 알 수 있다 */
+export function agentForAction(action: AgentAction): AgentId {
+  return AGENT_IDS.find((id) => AGENT_ROLES[id].action === action)!;
+}

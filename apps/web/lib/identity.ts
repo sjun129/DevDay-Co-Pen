@@ -2,6 +2,99 @@ import { useSyncExternalStore } from 'react';
 import { HUMAN_COLORS, type AwarenessUser } from '@co-pen/shared';
 
 const NICKNAME_KEY = 'co-pen:nickname';
+const GUEST_TOKEN_KEY = 'co-pen:guest-token';
+const SYNC_SERVER_URL = process.env.NEXT_PUBLIC_SYNC_SERVER_URL ?? 'ws://localhost:1234';
+
+interface GuestCredentialResponse {
+  token: string;
+  actorId: string;
+  expiresAt: string;
+}
+
+let pendingCredential: Promise<string> | null = null;
+
+export interface GuestAuthenticationRecoveryState {
+  attempted: boolean;
+}
+
+function loadGuestToken(): string {
+  try {
+    return localStorage.getItem(GUEST_TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function saveGuestToken(token: string) {
+  try {
+    localStorage.setItem(GUEST_TOKEN_KEY, token);
+  } catch {
+    // Storage-disabled browsers can still use the credential for the current page session.
+  }
+}
+
+export function clearGuestToken() {
+  try {
+    localStorage.removeItem(GUEST_TOKEN_KEY);
+  } catch {
+    // A failed removal is handled by force-refreshing without reusing the stored value.
+  }
+}
+
+function guestIdentityUrl(): string {
+  const url = new URL('/identity/guest', SYNC_SERVER_URL);
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  return url.toString();
+}
+
+async function requestGuestToken(): Promise<string> {
+  const response = await fetch(guestIdentityUrl(), {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error('guest_identity_unavailable');
+
+  const credential = (await response.json()) as Partial<GuestCredentialResponse>;
+  if (
+    typeof credential.token !== 'string' ||
+    !credential.token ||
+    typeof credential.actorId !== 'string' ||
+    typeof credential.expiresAt !== 'string'
+  ) {
+    throw new Error('invalid_guest_identity_response');
+  }
+
+  saveGuestToken(credential.token);
+  return credential.token;
+}
+
+export async function getOrCreateGuestToken(forceRefresh = false): Promise<string> {
+  if (!forceRefresh) {
+    const stored = loadGuestToken();
+    if (stored) return stored;
+  } else {
+    clearGuestToken();
+  }
+
+  if (!pendingCredential) {
+    pendingCredential = requestGuestToken().finally(() => {
+      pendingCredential = null;
+    });
+  }
+  return pendingCredential;
+}
+
+export async function refreshGuestTokenOnce(
+  reason: string,
+  state: GuestAuthenticationRecoveryState,
+  refresh: (forceRefresh: boolean) => Promise<string> = getOrCreateGuestToken,
+): Promise<string> {
+  if (reason !== 'invalid_guest_token') throw new Error('guest_identity_not_refreshable');
+  if (state.attempted) throw new Error('guest_identity_refresh_exhausted');
+  state.attempted = true;
+  return refresh(true);
+}
 
 export function loadNickname(): string {
   try {

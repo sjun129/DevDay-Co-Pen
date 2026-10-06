@@ -6,11 +6,10 @@ import {
   agentUser,
   type AgentId,
   type AgentJobRequest,
-  type AgentStatelessMessage,
 } from '@co-pen/shared';
 import { getFragment } from './doc-model';
 import { env } from './env';
-import { JobError, runJob } from './run-job';
+import { runJob } from './run-job';
 
 /**
  * F4: 에이전트는 (방, 역할)마다 헤드리스 Yjs 클라이언트로 접속한다.
@@ -52,15 +51,8 @@ export class AgentSession {
     this.enqueue(async () => {
       try {
         await runJob(this, job);
-      } catch (error) {
-        console.error(`[job ${job.jobId}]`, error);
-        this.sendStatus({
-          type: 'agent:status',
-          agentId: this.agentId,
-          jobId: job.jobId,
-          status: 'error',
-          message: error instanceof JobError ? error.message : '모델 호출에 실패했어요. 잠시 뒤 다시 시도해 주세요.',
-        });
+      } catch {
+        console.error(`[job ${job.jobId}] worker_execution_failed`);
       }
     });
   }
@@ -69,10 +61,6 @@ export class AgentSession {
     this.enqueue(async () => {
       this.undoManager.undo();
     });
-  }
-
-  sendStatus(message: AgentStatelessMessage) {
-    this.provider.sendStateless(JSON.stringify(message));
   }
 
   destroy() {

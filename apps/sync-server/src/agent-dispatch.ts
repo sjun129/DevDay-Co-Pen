@@ -14,9 +14,10 @@ async function post(pathname: string, body: AgentRoomRequest) {
       [AGENT_SECRET_HEADER]: env.agentSharedSecret,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) {
-    throw new Error(`agent worker ${pathname} 응답 ${response.status}: ${await response.text()}`);
+    throw new Error(`agent_dispatch_failed:${response.status}`);
   }
 }
 

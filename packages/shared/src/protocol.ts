@@ -9,7 +9,8 @@ import type { AgentId } from './agents';
 export type ClientStatelessMessage =
   | {
       type: 'agent:mention';
-      prompt: string;
+      /** One browser intent. Retries for the same pending intent reuse this UUID. */
+      idempotencyKey: string;
       requestedBy: string;
       /** 멘션이 입력된 문단의 텍스트. 워커가 이 문단을 앵커로 찾는다. */
       mentionText: string;
@@ -30,6 +31,8 @@ export type AgentStatelessMessage = {
   agentId: AgentId;
   jobId: string;
   status: AgentJobStatus;
+  /** Present for browser-originated jobs so the in-memory pending request can be acknowledged. */
+  idempotencyKey?: string;
   message?: string;
 };
 
@@ -73,6 +76,21 @@ export interface AgentJobRequest extends AgentRoomRequest {
   stateVector: string;
 }
 
+/** Agent Worker -> Sync Server. The Sync Server remains the only database principal. */
+export interface AgentJobTransitionRequest extends AgentRoomRequest {
+  jobId: string;
+  expectedStatus: 'queued' | 'planning' | 'writing';
+  nextStatus: 'planning' | 'writing' | 'done' | 'error';
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface AgentJobTransitionResponse {
+  jobId: string;
+  status: AgentJobStatus;
+  transitioned: boolean;
+}
+
 /** POST /undo */
 export interface AgentUndoRequest extends AgentRoomRequest {
   requestedBy: string;
@@ -80,3 +98,21 @@ export interface AgentUndoRequest extends AgentRoomRequest {
 }
 
 export const AGENT_SECRET_HEADER = 'x-co-pen-agent-secret';
+
+/**
+ * 워커가 보고할 수 있는 실패 사유. 사람에게 보일 문구는 서버가 이 표에서 고르므로
+ * 워커 채널로 들어온 임의 문자열(모델·런타임 오류 내용)은 저장되지 않는다.
+ */
+export const AGENT_JOB_ERRORS = {
+  worker_execution_failed: 'AI 작업 실행에 실패했습니다.',
+  invalid_mention: '멘션 형식이 아닌 요청이에요.',
+  rewrite_target_missing: '고칠 문단을 찾지 못했어요. 고칠 문단 바로 아래 줄에 @교정을 써 주세요.',
+  rewrite_target_removed: '고칠 문단이 그 사이에 사라졌어요.',
+  rewrite_target_pending: '아직 검토하지 않은 AI 제안이 있는 문단이에요. 먼저 수락하거나 거절해 주세요.',
+} as const;
+
+export type AgentJobErrorCode = keyof typeof AGENT_JOB_ERRORS;
+
+export function isAgentJobErrorCode(value: unknown): value is AgentJobErrorCode {
+  return typeof value === 'string' && Object.hasOwn(AGENT_JOB_ERRORS, value);
+}
