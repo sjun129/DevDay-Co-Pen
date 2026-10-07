@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: co-pen-server
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PERSISTENCE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GUEST_TOKEN_SECRET
+        generateValue: true
+      - key: AGENT_SHARED_SECRET
+        generateValue: true
+      - key: AGENT_WORKER_URL
+        value: http://127.0.0.1:1235
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/
+      - key: OPENAI_MODEL
+        value: gemini-flash-lite-latest
