@@ -17,7 +17,9 @@ COPY packages/shared packages/shared
 COPY apps/sync-server apps/sync-server
 COPY apps/agent-worker apps/agent-worker
 
+# 워커가 먼저 떠야 한다. 동기화 서버가 먼저 요청을 받으면 그 사이 AI 요청이 dispatch_failed로 끝난다(무료 등급 콜드 스타트마다 발생).
 SHELL ["/bin/bash", "-c"]
 CMD (cd apps/agent-worker && SYNC_SERVER_URL="ws://127.0.0.1:${PORT:-1234}" PORT=1235 node --import tsx src/index.ts) & \
+    until node -e "fetch('http://127.0.0.1:1235/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"; do sleep 0.5; done; \
     (cd apps/sync-server && node --import tsx src/index.ts) & \
     wait -n; exit 1
