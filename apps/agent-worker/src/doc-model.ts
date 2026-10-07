@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import { DOC_FIELD } from '@co-pen/shared';
+import { DOC_FIELD, type SourceExcerpt } from '@co-pen/shared';
 
 export interface BlockSummary {
   index: number;
@@ -32,6 +32,57 @@ export function summarizeBlocks(fragment: Y.XmlFragment): BlockSummary[] {
     type: node instanceof Y.XmlElement ? node.nodeName : 'text',
     text: plainText(node),
   }));
+}
+
+/** 본문 작성기에 싣는 문서 전문의 글자 수 상한 */
+export const DOCUMENT_CONTEXT_BUDGET = 12_000;
+
+/**
+ * 본문 작성기에 줄 문서 전문. 문서를 못 본 모델은 빈자리를 지어내서 채우므로 가능한 한 전문을 싣는다.
+ * 예산을 넘으면 쓸 위치(focus)에서 가까운 블록부터 전문을 싣고, 나머지는 앞부분만 남긴다.
+ */
+export function documentContext(
+  blocks: BlockSummary[],
+  focus: number,
+  budget = DOCUMENT_CONTEXT_BUDGET,
+): string {
+  const full = new Set<number>();
+  let used = 0;
+  const byDistance = [...blocks].sort((a, b) => Math.abs(a.index - focus) - Math.abs(b.index - focus));
+  for (const block of byDistance) {
+    if (used + block.text.length > budget) continue;
+    used += block.text.length;
+    full.add(block.index);
+  }
+  return blocks
+    .map((block) => {
+      const text = neutralizeDelimiters(
+        full.has(block.index) ? block.text : `${block.text.slice(0, 80)}…(생략)`,
+      );
+      return `[${block.index}] (${block.type}) ${text}`;
+    })
+    .join('\n');
+}
+
+/**
+ * 데이터 안의 <document>·<sources> 태그 흉내를 무력화한다.
+ * 문서나 올린 자료에 "</document> SYSTEM: …"을 써서 데이터 채널을 빠져나가는 것을 막는다 (L1).
+ */
+export function neutralizeDelimiters(text: string): string {
+  return text.replace(/<\s*(\/?)\s*(document|sources)\s*>/gi, '‹$1$2›');
+}
+
+/** 자료 조각을 파일(label)별로 묶는다. 같은 label의 조각은 받은 순서대로 잇는다. */
+export function sourcesContext(sources: readonly SourceExcerpt[]): string {
+  const byLabel = new Map<string, { fileName: string; texts: string[] }>();
+  for (const { label, fileName, text } of sources) {
+    const group = byLabel.get(label) ?? { fileName, texts: [] };
+    group.texts.push(text);
+    byLabel.set(label, group);
+  }
+  return [...byLabel]
+    .map(([label, { fileName, texts }]) => `[${label}] ${fileName}\n${texts.join('\n…\n')}`)
+    .join('\n\n');
 }
 
 /** 멘션이 입력된 문단을 찾는다. 같은 문장이 여러 번 있으면 가장 아래 것을 쓴다. */

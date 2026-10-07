@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as Y from 'yjs';
-import { DOC_FIELD, type AgentJobStatus } from '@co-pen/shared';
+import { DOC_FIELD, type AgentJobRequest, type AgentJobStatus } from '@co-pen/shared';
 import {
   JobAuditDatabaseError,
   type AgentJob,
@@ -326,4 +326,51 @@ test('startup recovery redispatches audited queued work from Yjs and errors stal
   assert.equal(recovery.queuedDispatched, 1);
   assert.equal(recovery.staleFailed, 1);
   assert.equal(store.jobs.get(stale.jobId)?.status, 'error');
+});
+
+const SOURCE_CHUNKS = [
+  { number: 2, fileName: 'b.pdf', ordinal: 1, text: '둘째 자료' },
+  { number: 1, fileName: 'a.txt', ordinal: 1, text: '첫 자료' },
+];
+
+test('accepted and recovered jobs carry source excerpts in file order', async () => {
+  const store = new MemoryJobAuditStore();
+  const dispatched: AgentJobRequest[] = [];
+  const runtime = new DurableJobRuntime({
+    store,
+    documentStore: documentStore(),
+    dispatchJob: async (job) => void dispatched.push(job),
+    broadcast() {},
+    loadSourceChunks: async (documentName) => {
+      assert.equal(documentName, DOCUMENT_NAME);
+      return SOURCE_CHUNKS;
+    },
+  });
+  await runtime.acceptMention(mention());
+  await runtime.recoverOnStartup(15 * 60 * 1000);
+  assert.equal(dispatched.length, 2);
+  for (const request of dispatched) {
+    assert.deepEqual(request.sources, [
+      { label: '자료1', fileName: 'a.txt', text: '첫 자료' },
+      { label: '자료2', fileName: 'b.pdf', text: '둘째 자료' },
+    ]);
+  }
+});
+
+test('source loading failure never blocks the job', async () => {
+  const store = new MemoryJobAuditStore();
+  const dispatched: AgentJobRequest[] = [];
+  const runtime = new DurableJobRuntime({
+    store,
+    documentStore: documentStore(),
+    dispatchJob: async (job) => void dispatched.push(job),
+    broadcast() {},
+    loadSourceChunks: async () => {
+      throw new Error('database_unavailable');
+    },
+  });
+  const result = await runtime.acceptMention(mention());
+  assert.equal(result.job.status, 'queued');
+  assert.equal(dispatched.length, 1);
+  assert.equal('sources' in dispatched[0]!, false);
 });

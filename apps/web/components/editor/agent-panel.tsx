@@ -24,6 +24,7 @@ import {
 import { useAgentStatus } from '@/lib/collab/use-agent-status';
 import type { RoomSession } from '@/lib/collab/room-session';
 import type { PendingSuggestion } from '@/lib/editor/ai-suggestion';
+import { SourcePanel } from './source-panel';
 
 const STATUS: Record<AgentJobStatus | 'idle', { label: string; icon: LucideIcon; tone: string; spin?: boolean }> = {
   idle: { label: '대기 중', icon: Sparkles, tone: 'bg-slate-100 text-slate-600' },
@@ -129,6 +130,8 @@ export function AgentPanel({ session, suggestions, onAccept, onReject, onUndoAge
           </ul>
         )}
       </section>
+
+      <SourcePanel session={session} />
     </aside>
   );
 }

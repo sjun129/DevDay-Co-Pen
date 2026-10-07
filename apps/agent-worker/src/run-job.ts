@@ -196,7 +196,12 @@ async function insertDraft({ session, job, dependencies, prompt, blocks, mention
       target = insertParagraph(fragment, resolveBlockIndex(doc, anchors[plan.targetIndex]));
     }, AGENT_ORIGIN);
 
-    await streamInto(session, job, target, dependencies.stream({ prompt, targetIndex: plan.targetIndex, blocks }));
+    await streamInto(
+      session,
+      job,
+      target,
+      dependencies.stream({ prompt, targetIndex: plan.targetIndex, blocks, sources: job.sources }),
+    );
     return true;
   } finally {
     release();

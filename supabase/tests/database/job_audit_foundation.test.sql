@@ -62,7 +62,7 @@ SELECT ok(pg_temp.raises_sqlstate(
   '23514'
 ), 'invalid status is rejected');
 SELECT ok(pg_temp.raises_sqlstate(
-  $$INSERT INTO public.agent_jobs (job_id, document_name, requested_by_actor_id, agent_actor_id, operation_type, idempotency_key, prompt_hash) VALUES ('10000000-0000-4000-8000-000000000006', 'db-test-doc-1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '00000000-0000-4000-8000-000000000001', 'rewrite', 'bad-operation', repeat('a', 64))$$,
+  $$INSERT INTO public.agent_jobs (job_id, document_name, requested_by_actor_id, agent_actor_id, operation_type, idempotency_key, prompt_hash) VALUES ('10000000-0000-4000-8000-000000000006', 'db-test-doc-1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '00000000-0000-4000-8000-000000000001', 'delete_paragraph', 'bad-operation', repeat('a', 64))$$,
   '23514'
 ), 'non-executable operation is rejected');
 SELECT ok(pg_temp.raises_sqlstate(

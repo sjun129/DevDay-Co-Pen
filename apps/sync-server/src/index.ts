@@ -4,6 +4,7 @@ import {
   parseMention,
   parseStatelessMessage,
   type AgentStatelessMessage,
+  type SourcesStatelessMessage,
 } from '@co-pen/shared';
 import { dispatchJob, dispatchJoin, dispatchLeave, dispatchUndo } from './agent-dispatch';
 import { createActorStore } from './actors';
@@ -16,6 +17,8 @@ import { createJobAuditStore } from './job-audit-store';
 import { createJobRequestHandler } from './job-http';
 import { DurableJobRuntime, JobRuntimeError, jobStatusMessage } from './job-runtime';
 import { createDocumentStore, createPersistence } from './persistence';
+import { createSourceRequestHandler } from './source-http';
+import { createSourceStore } from './source-store';
 
 /** 방별 사람 접속 수. 첫 사람이 들어오면 에이전트를 부르고, 마지막 사람이 나가면 내보낸다. */
 const humansInRoom = new Map<string, number>();
@@ -28,6 +31,7 @@ const handleDocumentRequest = createDocumentRequestHandler(
   env.guestTokenSecret,
 );
 const jobAuditStore = env.persistenceBackend === 'supabase' ? createJobAuditStore(env) : null;
+const sourceStore = env.persistenceBackend === 'supabase' ? createSourceStore(env) : null;
 
 console.info(
   `[startup] environment=${env.appEnvironment} persistence=${env.persistenceBackend} database=${env.persistenceBackend === 'supabase' ? 'configured' : 'local-file'}`,
@@ -54,6 +58,8 @@ const jobRuntime = jobAuditStore
           .get(documentName)
           ?.broadcastStateless(JSON.stringify(message));
       },
+      loadSourceChunks: sourceStore ? (documentName) => sourceStore.listChunks(documentName) : undefined,
+      liveDocument: (documentName) => server.hocuspocus.documents.get(documentName),
     })
   : null;
 const handleJobRequest = createJobRequestHandler({
@@ -63,6 +69,17 @@ const handleJobRequest = createJobRequestHandler({
   actorStore,
   guestTokenSecret: env.guestTokenSecret,
   agentSharedSecret: env.agentSharedSecret,
+});
+const handleSourceRequest = createSourceRequestHandler({
+  store: sourceStore,
+  documentStore,
+  actorStore,
+  guestTokenSecret: env.guestTokenSecret,
+  broadcastChanged(documentName) {
+    server.hocuspocus.documents
+      .get(documentName)
+      ?.broadcastStateless(JSON.stringify({ type: 'sources:changed' } satisfies SourcesStatelessMessage));
+  },
 });
 
 server = new Server<ConnectionContext>({
@@ -76,7 +93,8 @@ server = new Server<ConnectionContext>({
     if (
       (await handleIdentityRequest(request, response)) ||
       (await handleDocumentRequest(request, response)) ||
-      (await handleJobRequest(request, response))
+      (await handleJobRequest(request, response)) ||
+      (await handleSourceRequest(request, response))
     ) {
       // Hocuspocus treats an empty rejection as "handled" and skips its default HTTP response.
       throw null;
@@ -110,6 +128,8 @@ server = new Server<ConnectionContext>({
     if (!message) return;
 
     const { kind, actorId } = connection.context as ConnectionContext;
+    // 자료함 변경 알림은 서버만 보낸다
+    if (message.type === 'sources:changed') return;
     if (message.type === 'agent:status') {
       // Runtime status is accepted only through the authenticated HTTP callback and DB CAS.
       return;

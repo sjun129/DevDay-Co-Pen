@@ -13,6 +13,7 @@ import {
   type AgentJobStatus,
   type AgentJobTransitionRequest,
   type AgentStatelessMessage,
+  type SourceExcerpt,
 } from '@co-pen/shared';
 import { DEFAULT_AGENT_ACTOR_ID } from './actors';
 import {
@@ -21,6 +22,8 @@ import {
   type JobAuditStore,
 } from './job-audit-store';
 import type { DocumentStore } from './persistence';
+import { mentionContext, selectExcerpts } from './source-excerpts';
+import type { StoredSourceChunk } from './source-store';
 
 const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -58,6 +61,10 @@ export interface JobRuntimeDependencies {
   documentStore: DocumentStore;
   dispatchJob(job: AgentJobRequest): Promise<void>;
   broadcast(documentName: string, message: AgentStatelessMessage): void;
+  /** 자료함 조각. 없으면 자료 없이 작업한다 */
+  loadSourceChunks?(documentName: string): Promise<StoredSourceChunk[]>;
+  /** 열려 있는 방의 최신 문서. 저장본은 몇 초 늦어 멘션 문단이 아직 없을 수 있다 */
+  liveDocument?(documentName: string): Y.Doc | undefined;
   now?: () => Date;
 }
 
@@ -166,19 +173,21 @@ function plainText(node: Y.XmlElement | Y.XmlText | Y.XmlHook): string {
   return '';
 }
 
+function paragraphsOf(document: Y.Doc): string[] {
+  return document.getXmlFragment(DOC_FIELD).toArray().map(plainText);
+}
+
 function recoverRequestFromState(
   job: AgentJob,
   state: Uint8Array,
   requestedBy: string,
-): AgentJobRequest | null {
+): { request: AgentJobRequest; paragraphs: string[] } | null {
   const agentId = agentForAction(job.operationType);
   const document = new Y.Doc();
   try {
     Y.applyUpdate(document, state);
-    const candidates = document
-      .getXmlFragment(DOC_FIELD)
-      .toArray()
-      .map(plainText)
+    const paragraphs = paragraphsOf(document);
+    const candidates = paragraphs
       .map((text) => ({ text: text.trim(), mention: parseMention(text) }))
       .filter(
         (candidate): candidate is { text: string; mention: NonNullable<typeof candidate.mention> } =>
@@ -187,13 +196,16 @@ function recoverRequestFromState(
     // A hash alone is not a durable position anchor. Refuse ambiguous recovery.
     if (candidates.length !== 1) return null;
     return {
-      jobId: job.jobId,
-      documentName: job.documentName,
-      agentId,
-      prompt: candidates[0]!.mention.prompt,
-      requestedBy,
-      mentionText: candidates[0]!.text,
-      stateVector: Buffer.from(Y.encodeStateVector(document)).toString('base64'),
+      request: {
+        jobId: job.jobId,
+        documentName: job.documentName,
+        agentId,
+        prompt: candidates[0]!.mention.prompt,
+        requestedBy,
+        mentionText: candidates[0]!.text,
+        stateVector: Buffer.from(Y.encodeStateVector(document)).toString('base64'),
+      },
+      paragraphs,
     };
   } catch {
     return null;
@@ -268,6 +280,13 @@ export class DurableJobRuntime {
     }
 
     this.dependencies.broadcast(result.job.documentName, jobStatusMessage(result.job));
+    const live = this.dependencies.liveDocument?.(result.job.documentName);
+    const sources = await this.selectSources(
+      result.job.documentName,
+      request.prompt,
+      request.mentionText,
+      live ? paragraphsOf(live) : [],
+    );
     try {
       await this.dependencies.dispatchJob({
         jobId: result.job.jobId,
@@ -277,6 +296,7 @@ export class DurableJobRuntime {
         requestedBy: request.actorNameSnapshot,
         mentionText: request.mentionText,
         stateVector: request.stateVector,
+        ...(sources.length > 0 ? { sources } : {}),
       });
       return result;
     } catch {
@@ -378,11 +398,11 @@ export class DurableJobRuntime {
         `job:${current.jobId}:requested`,
       );
       const state = requested ? await this.dependencies.documentStore.load(current.documentName) : null;
-      const request =
+      const recovered =
         requested?.eventType === 'ai_job_requested' && state
           ? recoverRequestFromState(current, state, requested.actorNameSnapshot)
           : null;
-      if (!request) {
+      if (!recovered) {
         const failed = await this.failJob(
           current,
           'queued',
@@ -393,10 +413,17 @@ export class DurableJobRuntime {
         continue;
       }
 
+      const { request, paragraphs } = recovered;
+      const sources = await this.selectSources(
+        current.documentName,
+        request.prompt,
+        request.mentionText,
+        paragraphs,
+      );
       const latest = await this.dependencies.store.getAgentJob(current.jobId);
       if (!latest || latest.status !== 'queued') continue;
       try {
-        await this.dependencies.dispatchJob(request);
+        await this.dependencies.dispatchJob(sources.length > 0 ? { ...request, sources } : request);
         result.queuedDispatched += 1;
       } catch {
         const failed = await this.failJob(
@@ -409,6 +436,23 @@ export class DurableJobRuntime {
       }
     }
     return result;
+  }
+
+  /** 자료를 못 불러와도 작업은 막지 않는다. 자료 없이 문서만 보고 쓰게 둔다 */
+  private async selectSources(
+    documentName: string,
+    prompt: string,
+    mentionText: string,
+    paragraphs: string[],
+  ): Promise<SourceExcerpt[]> {
+    if (!this.dependencies.loadSourceChunks) return [];
+    try {
+      const chunks = await this.dependencies.loadSourceChunks(documentName);
+      return selectExcerpts(chunks, `${prompt}\n${mentionContext(paragraphs, mentionText)}`);
+    } catch {
+      console.error('[sources] excerpt_load_failed');
+      return [];
+    }
   }
 
   private async appendFailedAudit(job: AgentJob): Promise<void> {

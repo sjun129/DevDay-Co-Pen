@@ -5,6 +5,7 @@
  */
 
 import type { AgentId } from './agents';
+import type { SourceExcerpt } from './sources';
 
 export type ClientStatelessMessage =
   | {
@@ -36,12 +37,16 @@ export type AgentStatelessMessage = {
   message?: string;
 };
 
-export type StatelessMessage = ClientStatelessMessage | AgentStatelessMessage;
+/** 동기화 서버 → 브라우저. 자료함 목록이 바뀌었으니 다시 불러오라는 신호 */
+export type SourcesStatelessMessage = { type: 'sources:changed' };
+
+export type StatelessMessage = ClientStatelessMessage | AgentStatelessMessage | SourcesStatelessMessage;
 
 const STATELESS_TYPES = new Set<StatelessMessage['type']>([
   'agent:mention',
   'agent:undo',
   'agent:status',
+  'sources:changed',
 ]);
 
 export function parseStatelessMessage(raw: string): StatelessMessage | null {
@@ -74,6 +79,8 @@ export interface AgentJobRequest extends AgentRoomRequest {
   requestedBy: string;
   mentionText: string;
   stateVector: string;
+  /** 자료함에서 고른 근거 조각. 없거나 비면 문서만 보고 쓴다 */
+  sources?: SourceExcerpt[];
 }
 
 /** Agent Worker -> Sync Server. The Sync Server remains the only database principal. */
